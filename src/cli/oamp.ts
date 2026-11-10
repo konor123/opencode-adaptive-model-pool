@@ -1,5 +1,5 @@
 // oamp CLI: deterministic inspection without going through an LLM (plan v1.3 §9).
-//   oamp status | oamp routes [--all] [--provider p] | oamp refresh [--force] | oamp bootstrap
+//   oamp status | routes [--all] [--provider p] | refresh [--force] | usage [--full] | bench [--force] | rank [--all] | model <route>
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -10,8 +10,7 @@ import { resolveOptions } from "../options.ts"
 import { kvGet, kvSet, openDb } from "../storage/db.ts"
 import { refreshBenchmarks } from "../benchmarks/refresh.ts"
 import { computePerformanceScores } from "../scoring/compute.ts"
-import { selfEvaluate } from "../selfeval/evaluate.ts"
-import { bootstrapFromOpencodeDb } from "../telemetry/bootstrap.ts"
+import { importUsage } from "../telemetry/usage-import.ts"
 
 /** Strip // and /* *\/ comments outside strings, and trailing commas. */
 export function parseJsonc(text: string): any {
@@ -78,22 +77,6 @@ async function main(argv: string[]) {
     console.log(JSON.stringify({ benchmarks: b, scored: s.length, withEvidence: s.filter((x) => x.result.used.length).length }, null, 2))
     return
   }
-  if (cmd === "selfeval") {
-    // oamp selfeval [--route r]... [--missing N]   (--missing: N eligible routes with the lowest confidence)
-    const routes: string[] = []
-    rest.forEach((a, i) => a === "--route" && rest[i + 1] && routes.push(rest[i + 1]!))
-    const missing = Number(arg("--missing") ?? 0)
-    if (missing > 0) {
-      const rows = db.query(`SELECT r.route_id FROM routes r LEFT JOIN scores s ON s.route_id = r.route_id AND s.pool = 'auto'
-        WHERE r.status = 'active' AND r.eligible = 1 ORDER BY COALESCE(s.c, 0) ASC, r.route_id LIMIT ?`).all(missing) as any[]
-      routes.push(...rows.map((r) => r.route_id))
-    }
-    const reps = await selfEvaluate(db, routes)
-    for (const r of reps) console.log(JSON.stringify(r))
-    const s = computePerformanceScores(db, opts, loadModelsDev(opts.paths.modelsDevCache)?.openrouter?.models)
-    console.log(`rescored ${s.length} routes`)
-    return
-  }
   if (cmd === "rank") {
     const all = flag("--all")
     const rows = db.query(`SELECT r.route_id, r.price_state, r.eligible, s.p, s.p_eff, s.c, s.detail_json FROM routes r
@@ -118,10 +101,13 @@ async function main(argv: string[]) {
     console.log(JSON.stringify({ route: { ...r, meta_json: JSON.parse(r.meta_json) }, score: s ? { ...s, detail_json: JSON.parse(s.detail_json ?? "{}") } : null, history: h }, null, 2))
     return
   }
-  if (cmd === "bootstrap") {
-    const r = bootstrapFromOpencodeDb(db, opts.paths.opencodeDb)
-    kvSet(db, "bootstrap:done", JSON.stringify({ at: Date.now(), ...r }))
-    console.log(JSON.stringify(r))
+  if (cmd === "usage") {
+    // full re-import of real usage from opencode.db (idempotent upsert), then rescore
+    const r = importUsage(db, opts.paths.opencodeDb, { sinceMs: flag("--full") ? 0 : Math.max(0, Number(kvGet(db, "usage:cursor") ?? 0) - 3 * 3_600_000) })
+    kvSet(db, "usage:cursor", String(r.cursor))
+    kvSet(db, "usage:last", JSON.stringify({ at: Date.now(), ...r }))
+    const s = computePerformanceScores(db, opts, loadModelsDev(opts.paths.modelsDevCache)?.openrouter?.models)
+    console.log(JSON.stringify({ usage: r, scored: s.length, withEvidence: s.filter((x) => x.result.used.length).length }))
     return
   }
   if (cmd === "routes") {
@@ -145,12 +131,12 @@ async function main(argv: string[]) {
   console.log("\nprovider model sync:")
   for (const pid of Object.keys(opts.providerSync)) console.log(`  ${pad(pid, 12)} ${kvGet(db, `provider-sync:${pid}`) ?? "never"}`)
   console.log("\ncatalog last sync:", kvGet(db, "catalog:last-sync") ?? "never")
-  console.log("history bootstrap:", kvGet(db, "bootstrap:done") ?? "not yet")
+  console.log("usage import:", kvGet(db, "usage:last") ?? "not yet")
   console.log("benchmarks openrouter:", kvGet(db, "bench-sync:openrouter") ?? "never")
   console.log("benchmarks aa:", kvGet(db, "bench-sync:aa") ?? "never")
   console.log("scores:", kvGet(db, "scores:last") ?? "never")
-  const hist = db.query(`SELECT count(*) n, count(DISTINCT route_id) r FROM request_metrics WHERE kind='history'`).get() as any
-  console.log(`request_metrics(history): ${hist.n} rows over ${hist.r} routes`)
+  const hist = db.query(`SELECT count(*) n, count(DISTINCT route_id) r, sum(tool_calls) t FROM request_metrics WHERE kind='history'`).get() as any
+  console.log(`request_metrics(history): ${hist.n} steps over ${hist.r} routes, ${hist.t ?? 0} tool calls`)
 }
 
 if (import.meta.main) {

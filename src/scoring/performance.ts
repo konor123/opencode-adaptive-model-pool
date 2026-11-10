@@ -4,13 +4,12 @@ export type Category = "C" | "A" | "I"
 
 /** indicator → [category, weight inside the category]. Unknown indicators are ignored. */
 export const INDICATORS: Record<string, [Category, number]> = {
-  aa_coding: ["C", 0.4],
-  selfeval_coding: ["C", 0.25],
-  swe_bench_pro: ["C", 0.15],
-  usage_success: ["C", 0.2],
+  aa_coding: ["C", 0.45],
+  usage_edit: ["C", 0.35], // real usage: edit/write calls without model-caused failure
+  swe_bench_pro: ["C", 0.2],
   aa_agentic: ["A", 0.35],
   tau_bench_airline: ["A", 0.25],
-  selfeval_tools: ["A", 0.25],
+  usage_tools: ["A", 0.25], // real usage: tool calls with schema-valid arguments
   terminal_bench: ["A", 0.15],
   aa_intelligence: ["I", 0.6],
   gpqa_diamond: ["I", 0.25],
@@ -31,7 +30,7 @@ export interface Indicator {
   matchConf: number
   /** epoch ms of evaluation (or collection) */
   at: number
-  /** independent origin: aa | openrouter | selfeval | snapshot | usage */
+  /** independent origin: aa | openrouter | snapshot | usage */
   origin: string
 }
 

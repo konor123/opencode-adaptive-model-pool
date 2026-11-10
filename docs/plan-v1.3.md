@@ -567,8 +567,14 @@ schema_version(v)
 - 같은 AA 측정이 두 경로로 오면 OpenRouter 사본 하나만 쓴다(`via` 우선순위). 기준 범위는 (출처, 경로, 지표, 버전)별 p5/p95로 처음 한 번 고정한다(`kv ref:*`).
 - 식별자 연결: OR permaslug는 끝의 날짜(`-YYYYMMDD`)를 떼고 models.dev openrouter 항목과 대응(신뢰도 1.0, 없으면 0.8). AA slug는 canonical 모델 부분의 `.`·`_`를 `-`로 바꿔 유일하게 일치할 때만 대응(0.8). 💡 **교차 공급자 별칭 색인**: 자기 models.dev 항목이 없는 경로(xkiro 등)도 다른 공급자의 같은 `org/model` 항목에서 canonical ID를 가져온다(0.9).
 - 💡 **사전값 변경(계획 §5.2 대비)**: 근거가 없을 때 수렴하는 값을 50 고정 대신 **같은 풀에서 근거 있는 eligible 경로의 P 중앙값**(실측 45.6)으로 한다. 정규화 기준이 유료 최상위 모델을 포함한 전체 분포여서, 50은 무료 미평가 모델에 지나치게 낙관적이었다. 설정 `scoring.prior`로 50 고정을 선택할 수 있다.
-- 자체 평가: 과제 4개(코딩 2: 버그 수정, 다중 파일 이름 변경 / 도구 2: JSON 정확 작성, 읽고 쓰기). 결정적 검증기를 쓰고 `opencode run`으로 실행한다(Zen 무료 모델도 원래 경로로 호출됨). OpenCode 자체가 실패한 실행(0이 아닌 종료 코드)은 채점하지 않는다. 시간 초과는 실패로 친다. 하루 80회 상한. 결과는 canonical 단위 `selfeval_coding`/`selfeval_tools`(0–100)로 저장한다. 평가 세션은 OpenCode 세션 목록에 `oamp-selfeval …` 제목으로 남는다.
-- 첫 결과: exaone `k-exaone_v2.5`가 4/4 통과(코딩 100, 도구 100). 현재 과제는 쉬워서 변별력이 낮을 수 있다 → 과제 확장은 Phase 5.
+- ~~자체 평가~~ → **실사용 기록으로 대체(2026-11-10 사용자 결정 "자체평가는 필요없다. 실사용하면서 생기는 기록으로 한다")**. 자체 평가 코드와 그 결과(관측 22건, 실행 59건), 평가용 OpenCode 세션 60개는 모두 삭제했다.
+- 실사용 지표: opencode.db의 assistant 단계와 도구 파트를 증분으로 가져온다(읽기 전용, 겹침 3시간, 해시 ID). 모델 탓으로 볼 수 있는 실패만 센다.
+  - `usage_tools`(A, 0.25): 도구 인자가 스키마에 맞는 비율(`called with invalid arguments`/`SchemaError`가 실패). 표본 30회 이상.
+  - `usage_edit`(C, 0.35): edit·write·patch 호출 중 스키마 오류·`Could not find oldString`이 없는 비율. 표본 20회 이상.
+  - 파일 없음·명령 실패·도구 한도 같은 환경 오류는 모델에 불리하게 세지 않는다. 메시지 단위 성공률은 실측상 거의 100%라 변별력이 없어 지표에서 뺐다(가용성은 Phase 3의 H가 맡는다).
+  - 기준 범위(가설): `usage_tools` 90–100%, `usage_edit` 70–100%. 최근 30일 기준, canonical 모델 단위로 합산.
+  - C 내부 가중치 조정: `aa_coding 0.45 / usage_edit 0.35 / swe_bench_pro 0.20`. A: `aa_agentic 0.35 / tau_bench 0.25 / usage_tools 0.25 / terminal_bench 0.15`.
+- 적용 결과: 2,461단계, 도구 호출 2,954회. 근거 있는 경로 32/86. deepseek-v4.1-flash는 C가 추론 대리값(61*)에서 실사용 편집 정확도 기반 100으로 바뀌었고, north-mini-code는 도구 인자 오류(약 6%)가 반영돼 하락했다.
 - 위임 기록: AA 수집기를 맡은 OpenCode worker(task_07f43cbbfe81)가 범위 밖 파일을 삭제해 중지시켰다(커밋된 `canonical.ts` 포함). Coordinator가 복원하고 직접 구현했다. 이후 위임은 **격리 worktree(`--worktree new-child`)**로만 한다.
 
 ## 13. 검증 기준 (v1.0 §13 + 추가)

@@ -77,6 +77,14 @@ const MIGRATIONS: string[] = [
   `,
   // v2: score explanation (indicators used, coverage, match, recency, independence)
   `ALTER TABLE scores ADD COLUMN detail_json TEXT;`,
+  // v3: real-usage quality signals per assistant step (tool calls from OpenCode's part table)
+  `ALTER TABLE request_metrics ADD COLUMN finish TEXT;
+   ALTER TABLE request_metrics ADD COLUMN tool_calls INTEGER;
+   ALTER TABLE request_metrics ADD COLUMN tool_schema_err INTEGER;
+   ALTER TABLE request_metrics ADD COLUMN tool_other_err INTEGER;
+   ALTER TABLE request_metrics ADD COLUMN edit_calls INTEGER;
+   ALTER TABLE request_metrics ADD COLUMN edit_fail INTEGER;
+   DELETE FROM request_metrics WHERE kind = 'selfeval';`,
 ]
 
 export type Db = Database

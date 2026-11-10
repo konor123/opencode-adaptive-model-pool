@@ -1,5 +1,6 @@
 // OAMP OpenCode plugin entry (V1 hooks; external V2 plugins are not loadable in OpenCode 1.19.5, see docs/compatibility.md E1).
-// Phase 1: provider model discovery (config hook injection), route registry, history bootstrap. No model selection yet.
+// Phases 1–2: provider model discovery (config hook injection), route registry, real-usage import, benchmarks and
+// performance scores. No model selection yet (Phase 3).
 import { applyAndSync, loadCaches, refreshProviderModels } from "./discovery/pipeline.ts"
 import { loadModelsDev } from "./discovery/models-dev.ts"
 import { initLog, log } from "./log.ts"
@@ -7,7 +8,7 @@ import { resolveOptions } from "./options.ts"
 import { type Db, kvGet, kvSet, openDb } from "./storage/db.ts"
 import { refreshBenchmarks } from "./benchmarks/refresh.ts"
 import { computePerformanceScores } from "./scoring/compute.ts"
-import { bootstrapFromOpencodeDb } from "./telemetry/bootstrap.ts"
+import { importUsage, OVERLAP_MS } from "./telemetry/usage-import.ts"
 
 const FIRST_FETCH_TIMEOUT_MS = 5000
 
@@ -43,24 +44,25 @@ export const OampPlugin = async (_input: unknown, rawOptions?: unknown) => {
         }
         setTimeout(async () => {
           await refreshProviderModels(db, opts, cfgSnapshot).catch((e) => log("warn", "background refresh failed", { error: String(e) }))
+          let usageChanged = false
+          try {
+            const cursor = Number(kvGet(db, "usage:cursor") ?? 0)
+            const u = importUsage(db, opts.paths.opencodeDb, { sinceMs: Math.max(0, cursor - OVERLAP_MS) })
+            kvSet(db, "usage:cursor", String(u.cursor))
+            kvSet(db, "usage:last", JSON.stringify({ at: Date.now(), ...u }))
+            usageChanged = u.inserted > 0
+          } catch (e: any) {
+            log("warn", "usage import failed", { error: String(e?.message ?? e) })
+          }
           try {
             const b = await refreshBenchmarks(db, opts, cfgSnapshot)
             const fetched = Object.values(b).some((x) => x.ok && x.count)
-            if (fetched || !kvGet(db, "scores:last")) {
+            if (fetched || usageChanged || !kvGet(db, "scores:last")) {
               const s = computePerformanceScores(db, opts, loadModelsDev(opts.paths.modelsDevCache)?.openrouter?.models)
               log("info", "performance scores", { benchmarks: b, routes: s.length, withEvidence: s.filter((x) => x.result.used.length).length })
             }
           } catch (e: any) {
             log("warn", "benchmark/scoring failed", { error: String(e?.message ?? e) })
-          }
-          try {
-            if (!kvGet(db, "bootstrap:done")) {
-              const r = bootstrapFromOpencodeDb(db, opts.paths.opencodeDb)
-              kvSet(db, "bootstrap:done", JSON.stringify({ at: Date.now(), ...r }))
-              log("info", "history bootstrap", { ...r })
-            }
-          } catch (e: any) {
-            log("warn", "history bootstrap failed", { error: String(e?.message ?? e) })
           }
         }, 0)
       } catch (e: any) {

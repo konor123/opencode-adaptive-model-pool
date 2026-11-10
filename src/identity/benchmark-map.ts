@@ -52,7 +52,6 @@ export class BenchmarkMapper {
   map(source: string, via: string, subject: string): SubjectMatch | undefined {
     if (via === "openrouter-api") return this.mapOr(subject)
     if (via === "aa-api") return this.mapAa(subject)
-    if (source === "selfeval") return { canonicalID: subject, conf: 1.0 }
     return undefined
   }
 }

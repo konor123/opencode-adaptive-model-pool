@@ -46,8 +46,6 @@ export function computePerformanceScores(db: Db, opts: OampOptions, modelsDevOpe
   )
   const obs = loadObservations(db).filter((o) => !o.benchmark.startsWith("speed_"))
   const refs = ensureReferenceRanges(db, obs)
-  // self-evaluation scores are already 0..100 pass rates
-  for (const o of obs) if (o.source === "selfeval") refs.set(refKey(o), { min: 0, max: 100 })
 
   // canonical → indicator → best observation
   type Cand = { ind: Indicator; viaRank: number }
@@ -69,6 +67,11 @@ export function computePerformanceScores(db: Db, opts: OampOptions, modelsDevOpe
   const upsert = db.query(`INSERT INTO scores (route_id, pool, p, p_eff, c, l, h, r, computed_at, detail_json)
     VALUES (?, 'auto', ?, ?, ?, NULL, NULL, NULL, ?, ?)
     ON CONFLICT(route_id, pool) DO UPDATE SET p = excluded.p, p_eff = excluded.p_eff, c = excluded.c, computed_at = excluded.computed_at, detail_json = excluded.detail_json`)
+  // real-usage indicators (plan §5.1, replaces self-evaluation per 2026-11-10 decision)
+  for (const [canon, inds] of usageIndicators(db, now)) {
+    if (!byCanon.has(canon)) byCanon.set(canon, new Map())
+    for (const [k, ind] of Object.entries(inds)) byCanon.get(canon)!.set(k, { ind, viaRank: 0 })
+  }
   const indicatorsOf = (canon: string) => {
     const indicators: Record<string, Indicator> = {}
     for (const [k, v] of byCanon.get(canon) ?? []) indicators[k] = v.ind
@@ -90,5 +93,33 @@ export function computePerformanceScores(db: Db, opts: OampOptions, modelsDevOpe
     }
   })()
   kvSet(db, "scores:last", JSON.stringify({ at: now, routes: out.length, withEvidence: out.filter((x) => x.result.used.length).length, prior }), now)
+  return out
+}
+
+/** Fixed reference ranges for usage rates (percent). Hypotheses from the 2026-11-10 history; revisit with more data. */
+export const USAGE_REFS = { usage_tools: { min: 90, max: 100 }, usage_edit: { min: 70, max: 100 } }
+export const USAGE_MIN_SAMPLES = { usage_tools: 30, usage_edit: 20 }
+export const USAGE_WINDOW_DAYS = 30
+
+/** Aggregate real-usage tool signals per canonical model over the window. */
+export function usageIndicators(db: Db, now = Date.now()): Map<string, Record<string, Indicator>> {
+  const rows = db
+    .query(
+      `SELECT r.canonical_id AS canon, sum(m.tool_calls) AS calls, sum(m.tool_schema_err) AS schema,
+              sum(m.edit_calls) AS edits, sum(m.edit_fail) AS edit_fail, max(m.ts) AS last
+       FROM request_metrics m JOIN routes r ON r.route_id = m.route_id
+       WHERE m.kind IN ('history','primary') AND m.ts >= ? AND m.tool_calls IS NOT NULL
+       GROUP BY r.canonical_id`,
+    )
+    .all(now - USAGE_WINDOW_DAYS * 86_400_000) as { canon: string; calls: number; schema: number; edits: number; edit_fail: number; last: number }[]
+  const out = new Map<string, Record<string, Indicator>>()
+  for (const r of rows) {
+    const inds: Record<string, Indicator> = {}
+    if (r.calls >= USAGE_MIN_SAMPLES.usage_tools)
+      inds.usage_tools = { value: normalize(100 * (1 - r.schema / r.calls), USAGE_REFS.usage_tools), matchConf: 1, at: r.last, origin: "usage" }
+    if (r.edits >= USAGE_MIN_SAMPLES.usage_edit)
+      inds.usage_edit = { value: normalize(100 * (1 - r.edit_fail / r.edits), USAGE_REFS.usage_edit), matchConf: 1, at: r.last, origin: "usage" }
+    if (Object.keys(inds).length) out.set(r.canon, inds)
+  }
   return out
 }

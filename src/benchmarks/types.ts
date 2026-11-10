@@ -1,5 +1,5 @@
 // Normalized benchmark observation (one number for one subject from one source).
-export type BenchSource = "aa" | "openrouter" | "selfeval" | "snapshot"
+export type BenchSource = "aa" | "openrouter" | "snapshot"
 
 export interface BenchObservation {
   /** independent origin of the measurement. AA data re-served by OpenRouter is still "aa". */
@@ -8,7 +8,7 @@ export interface BenchObservation {
   via: string
   benchmark: string // e.g. aa_intelligence, aa_coding, aa_agentic, gpqa_diamond, tau_bench_airline
   version: string
-  /** source-native model identifier (OR permaslug, AA slug, route id for selfeval) */
+  /** source-native model identifier (OR permaslug, AA slug) */
   subject: string
   effort?: string
   /** raw value on the source's scale (higher is better) */
