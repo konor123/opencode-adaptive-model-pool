@@ -1,40 +1,44 @@
 # OpenCode Adaptive Model Pool (OAMP)
 
-An [OpenCode](https://opencode.ai) plugin that keeps a pool of models across providers and ranks them by public benchmarks and measured latency. When you pick the marker model `oamp/auto`, OAMP chooses the real model for each turn. Model calls always go through OpenCode itself, so OpenCode-only free models keep working.
+OAMP is an [OpenCode](https://opencode.ai) plugin. It keeps a pool of models across your providers, ranks them by public benchmarks, your own real-usage quality and measured latency, and avoids routes that are failing. Pick the marker model **`oamp/auto`** and OAMP chooses the real model for every turn. The call itself is still made by OpenCode.
 
-Status: **Phase 5** (all planned phases implemented). Model selection via `oamp/auto` (route score R = (0.7·P_eff + 0.3·L) × H) comes with live latency telemetry, sticky sessions, subagent inheritance, a route health state machine (cooldown, circuit breaker, probation), and in-turn failover. In the TUI and `opencode serve`, a turn whose route starts failing is aborted and continued on the next healthy route. Under `opencode run` the in-turn switch is off, because `run` exits when its session is aborted. There the failed route is avoided from the next run on. See `docs/plan-v1.3.md` and `docs/compatibility.md`.
+Status: all planned phases (0–5) are implemented. The design history (in Korean) is in [`docs/`](docs/).
 
-## What Phase 1 does
+## How it works
 
-- **Provider model sync**: for config-defined providers with a `/v1/models` endpoint (`xkiro`, `exaone`), OAMP fetches the model list in the background every 6 h and caches it. It injects the list into OpenCode's *in-memory* config through the V1 `config` hook. The config file on disk is never written. A provider `whitelist` that would hide every model is dropped in memory.
-- **Route registry**: OAMP builds the effective catalog (models.dev cache plus config, with OpenCode's whitelist, blacklist and deprecated filters applied) and stores one route per `provider/model` in SQLite. A route missing from the catalog once is marked stale. Missing twice, it is retired.
-- **Policy**: each route gets a price state (`free_verified`, `free_quota`, `free_declared`, `paid`, `unknown`) and an eligibility decision (tool calling, text output, price, deny list).
-- **Real-usage import**: OAMP reads OpenCode's `opencode.db` *read-only* and incrementally. Every assistant step becomes a metrics row: latency, tokens, error class, and tool-call outcomes. It stores hashed ids and numbers only.
-
-## Using it
-
-Pick **`oamp/auto`** (or `oamp/fast`) in the TUI model picker, or run `opencode run --model oamp/auto "…"`. Each turn, OAMP replaces the marker with the best healthy route, and OpenCode makes the call itself. The session stays on that route unless the route fails, a clearly better one stays better for 30 minutes, or the context no longer fits. Picking any real model switches the session to manual.
-
-## Phase 2: performance score
-
-- **Benchmarks**: OpenRouter Benchmarks (`/api/v1/benchmarks`, using the existing OpenRouter key) supplies the Artificial Analysis coding, agentic and intelligence indices plus OpenRouter's own GPQA and tau-bench results. The Artificial Analysis free API (key file `~/.config/oamp/aa-api-key`) adds the intelligence index and model-level speed priors. When both sources carry the same AA measurement, only one copy is used.
-- **Score**: `P = 0.55·C + 0.30·A + 0.15·I`. Every indicator is normalized against a reference range (p5/p95) that is frozen the first time the population is seen. Confidence `c = coverage × match × recency × independence`, and `P_eff = c·P + (1−c)·prior`, where the prior is the median P of the pool's evidenced routes.
-- **Real usage**: two indicators come from your own OpenCode history over the last 30 days, counting model-caused failures only. `usage_tools` is the share of tool calls with schema-valid arguments. `usage_edit` is the share of edit and write calls that did not fail with schema errors or a missing `oldString`.
-
-Benchmark data: Artificial Analysis (artificialanalysis.ai) and OpenRouter (openrouter.ai). Specialist leaderboards without an API (Scale Labs SWE-Bench Pro V2, MCP Atlas) are included as dated snapshots in `data/snapshots/`.
-
-## Install
-
-```sh
-git clone https://github.com/konor123/opencode-adaptive-model-pool && cd opencode-adaptive-model-pool
-scripts/oamp install      # adds only the plugin entry to ~/.config/opencode/opencode.jsonc (backup kept)
-scripts/oamp doctor       # verifies installation, providers, data freshness, recent errors
+```text
+you pick oamp/auto ──▶ chat.message hook ──▶ OAMP replaces the marker with the best healthy route
+                                             (e.g. opencode/deepseek-v4.1-flash-free) for this turn
+                                                     │
+                                OpenCode calls that route itself: its own SDK instance, headers and auth
+                                                     │
+            event / chat.headers hooks ◀── telemetry: TTFT, TTFA, E2E, tokens/s, errors, retries
 ```
 
-`install` and `uninstall` change nothing but the `plugin` entry. They only edit the file if it round-trips byte-for-byte as standard JSON; otherwise they print the line to add by hand. Equivalent manual configuration:
+- **No proxy.** OAMP never sends model requests itself. That matters for providers that only accept calls made by OpenCode, such as OpenCode Zen's free models: OpenCode attaches its own `x-opencode-*` headers only to its own providers.
+- `oamp/*` models exist only in memory. A `config` hook injects a marker provider whose base URL is a discard port, so the markers are never meant to be called.
+- Choosing any real model in a session turns auto mode off for that session. Your manual choice always wins.
+
+## Requirements
+
+- OpenCode **1.19.5** (the version this was verified on; see [`docs/compatibility.md`](docs/compatibility.md)). OAMP uses only OpenCode's **V1 plugin hooks**, because OpenCode 1.19.5 does not load external V2 plugins.
+- No `npm install` is needed to run it. The plugin and CLI run on the Bun runtime embedded in OpenCode: `scripts/bun` = `BUN_BE_BUN=1 ~/.opencode/bin/opencode`. Override the binary path with `OPENCODE_BIN`.
+- The source imports only `node:*` and `bun:sqlite`. Python 3 is not required.
+
+## Install, check, uninstall
+
+```sh
+git clone https://github.com/konor123/opencode-adaptive-model-pool
+cd opencode-adaptive-model-pool
+scripts/oamp install     # adds one "plugin" entry to ~/.config/opencode/opencode.jsonc (a backup is kept)
+scripts/oamp doctor      # installation, options, schema, providers, data freshness, recent errors
+# restart OpenCode, then pick oamp/auto
+scripts/oamp uninstall   # removes that entry again
+```
+
+`install` and `uninstall` touch nothing but the `plugin` entry. They only edit the file when it round-trips byte-for-byte as standard 2-space JSON. A file with comments or other formatting is left alone, and they print the line to add by hand:
 
 ```jsonc
-// ~/.config/opencode/opencode.jsonc
 {
   "plugin": [
     ["file:///path/to/opencode-adaptive-model-pool/src/index.ts", { "enabled": true }]
@@ -42,37 +46,145 @@ scripts/oamp doctor       # verifies installation, providers, data freshness, re
 }
 ```
 
-Options (all optional) are documented in `src/options.ts`. Defaults: providers `opencode, openrouter, nvidia, xkiro, exaone`, `allowPaid: false`, `freeDeclared: ["xkiro/*", "exaone/*"]`, DB at `~/.local/share/oamp/oamp.db`, log at `~/.local/share/oamp/oamp.log`.
+OAMP keeps its data in `~/.local/share/oamp/` (`oamp.db`, `oamp.log`). Delete that directory to remove every trace.
 
-To uninstall, run `scripts/oamp uninstall` (or remove the entry). OAMP's data stays in `~/.local/share/oamp` until you delete it.
+## Using it
+
+- **`oamp/auto`**: the default pool. **`oamp/fast`**: the same candidates, with latency weighted more heavily.
+- Select a marker in the TUI model picker (`/models`), in an agent's `model` field, or with `opencode run --model oamp/auto "…"`.
+- **Sticky sessions.** A session keeps its route. It switches only when:
+  - the route becomes unhealthy,
+  - the context no longer fits the route,
+  - a route limit applies,
+  - or another route has stayed at least 5 points better for 30 minutes.
+- **First turns.** The first turn of a new session sometimes (5% of the time) tries a route with little evidence. Such a route must not be known to be weak.
+- **Subagents.** Subagents (the task tool) inherit auto mode from their parent session.
+
+## Scoring
+
+| Score | Definition |
+|---|---|
+| Performance `P` | `0.55·C + 0.30·A + 0.15·I` (coding, agentic, reasoning). Each category is a weighted mean of whichever indicators exist; the weights are in [`src/scoring/performance.ts`](src/scoring/performance.ts). |
+| Confidence `c` | `coverage × match × recency × independence` |
+| `P_eff` | `c·P + (1−c)·prior`. The prior is the median `P` of the pool's routes that have evidence, so a model with no evidence is assumed to be typical for the pool rather than "50 out of 100". |
+| Latency `L` | `0.35·TTFA + 0.45·E2E + 0.20·tokens/s`, log-scaled, EWMA, shrunk toward neutral for routes with few samples |
+| Availability `H` | `clamp(success_ewma, 0.5, 1)²` over the latest outcomes. User aborts and context overflows are not counted. |
+| Route score `R` | `(0.7·P_eff + 0.3·L) × H`. The `fast` pool uses 0.4 / 0.6. |
+
+Evidence sources:
+
+- **OpenRouter Benchmarks API**, using your existing OpenRouter key. It re-serves the Artificial Analysis coding, agentic and intelligence indices and adds OpenRouter's own GPQA Diamond and tau-bench results.
+- **Artificial Analysis free API**. Optional; the key file is `~/.config/oamp/aa-api-key`. It provides the intelligence index and model-level speed priors. When both sources carry the same AA measurement, only one copy is used.
+- **Specialist leaderboards without an API** (Scale Labs SWE-Bench Pro V2, MCP Atlas). These are stored as dated snapshots in [`data/snapshots/`](data/snapshots/). Each file holds the whole leaderboard as the normalization population, with hand-checked name mappings.
+- **Your own real usage** from OpenCode's `opencode.db`, read-only, over the last 30 days. Only model-caused failures count against a model.
+  - `usage_tools`: the share of tool calls with schema-valid arguments. Needs at least 30 calls.
+  - `usage_edit`: the share of edit, write and patch calls that did not fail on a schema error or a missing `oldString`. Needs at least 20 calls.
+
+All benchmark indicators are normalized against a p5/p95 reference range. The range is frozen the first time each source version is seen, so adding or removing models does not shift existing scores.
+
+## When a route fails
+
+- **Health states** are shared by every OpenCode process on the host:
+  - A transient error starts a **cooldown**: 60, 120, 240, then 300 s.
+  - The third consecutive failure **opens** the route: 120 s, doubling on every re-open, up to 30 min.
+  - A 401, 403 or 404 **disables** the route for 24 h. A 401 disables every route of that provider.
+  - When any of these periods expires, the route is on **probation**. A probation route is used only when nothing healthy fits; a success there makes it healthy again.
+- **In-turn failover** in the TUI and `opencode serve`:
+  1. OpenCode starts retrying the same model in an auto session.
+  2. OAMP aborts the turn.
+  3. OAMP continues the turn on the next healthy route with a short synthetic "continue" message, at most twice per turn.
+
+  OAMP never replays a request itself. Steps that already ran stay in the history, so their tools are not executed twice.
+- **Under `opencode run`** in-turn failover is off. `run` exits as soon as its session is aborted, so the continued answer would never be printed. OpenCode's own retries handle the failure, and the failed route is avoided from the next run on.
+- **Route limits.** `routeLimits` caps the number of concurrent auto sessions per route; EXAONE allows 1 request per second. A route is also limited to one session automatically when more than 20% of its requests in the last 10 minutes were rate-limited.
+
+## Configuration
+
+Every option is optional. They are passed as the second element of the plugin entry, and the full list with defaults is in [`src/options.ts`](src/options.ts). Invalid numeric values (negative, NaN, weight groups summing to zero) fall back to the defaults, and `oamp doctor` reports them.
+
+The defaults reflect the deployment this was built for: providers `opencode`, `openrouter`, `nvidia`, plus two OpenAI-compatible providers `xkiro` and `exaone`. Adapt them for your setup:
+
+```jsonc
+["file:///path/to/opencode-adaptive-model-pool/src/index.ts", {
+  "providers": ["opencode", "openrouter"],
+  "policy": {
+    "allowPaid": false,           // never select a route with a known price
+    "allowUnknownPrice": false,   // ...or one without any price information
+    "freeDeclared": [],           // "provider/*" globs you know to be free
+    "deny": ["openrouter/openrouter/free"]
+  },
+  "providerSync": {},             // provider /v1/models sync (fixed endpoints in src/discovery/provider-api.ts)
+  "weights": { "performance": 0.7, "latency": 0.3 },
+  "pools": { "auto": {}, "fast": { "weights": { "performance": 0.4, "latency": 0.6 } } },
+  "selector": { "switchMargin": 5, "switchHoldMinutes": 30, "explorationBudget": 0.05, "inTurnFailover": true, "maxSwitchesPerTurn": 2 },
+  "routeLimits": { "exaone/*": { "maxSessions": 1 } }
+}]
+```
+
+Provider model-list sync (`providerSync`) only calls the fixed HTTPS endpoints listed in `src/discovery/provider-api.ts`. It replaced a cron job that rewrote the config file. OAMP never writes your config file; the lists are injected in memory at startup.
+
+The environment variable `OAMP_OPTIONS='{"…": …}'` overrides options for a process. This is useful for testing against a separate database: `{"storage": {"path": "/tmp/test.db"}}`.
 
 ## CLI
 
 ```sh
-scripts/oamp status            # routes per provider, sync, usage import, benchmark and score state
-scripts/oamp routes [--all] [--provider xkiro]
-scripts/oamp refresh [--force] # fetch provider model lists now and rebuild routes
-scripts/oamp usage [--full]    # import real usage from opencode.db (incremental; --full re-reads everything), rescore
-scripts/oamp bench [--force]   # fetch OpenRouter + Artificial Analysis benchmarks, recompute scores
-scripts/oamp rank [pool]       # what the selector uses: R, P_eff, L, H, samples, health
-scripts/oamp perf              # performance only: P_eff with C/A/I breakdown and evidence
-scripts/oamp decisions         # recent selector decisions with reasons
-scripts/oamp health            # route health states (cooldown / open / disabled / probation)
-scripts/oamp probe <route>     # one tiny request through `opencode run`; updates health, deletes the probe session
-scripts/oamp stats [--days 7]  # KPIs (unintended paid calls, auto-session outcomes, decisions) + benchmark-vs-usage correlation
-scripts/oamp doctor            # installation and health checklist (non-zero exit on failure)
-scripts/oamp install | uninstall
-scripts/oamp model <route>     # full detail for one route
+# inspect
+scripts/oamp status                 # routes per provider, sync, usage import, benchmark and score state
+scripts/oamp rank [auto|fast]       # what the selector sees: R, P_eff, L, H, samples, health
+scripts/oamp perf                   # P_eff with C/A/I breakdown and the evidence behind it
+scripts/oamp routes [--all] [--provider p]
+scripts/oamp model <route>          # everything known about one route
+scripts/oamp decisions [--limit n]  # recent selector decisions with reasons
+scripts/oamp health                 # cooldown / open / disabled / probation states
+scripts/oamp stats [--days 7]       # KPIs (e.g. unintended paid calls) and benchmark-vs-usage correlation
+
+# refresh (the plugin also does this in the background, leased across processes)
+scripts/oamp refresh [--force]      # provider model lists + route registry
+scripts/oamp bench [--force]        # benchmarks + scores
+scripts/oamp usage [--full]         # import real usage from opencode.db + rescore
+scripts/oamp probe <route>          # one tiny request through `opencode run`; the probe session is deleted
+
+# lifecycle
+scripts/oamp install | uninstall | doctor
 ```
 
-`scripts/bun` runs the Bun runtime embedded in OpenCode (`BUN_BE_BUN=1 opencode`), which is the same runtime the plugin runs in.
+## Data, network and credentials
+
+- **Stored**, in `~/.local/share/oamp/oamp.db` (SQLite in WAL mode, shared by all OpenCode processes):
+  - routes and their catalog facts
+  - benchmark numbers
+  - per-step metrics
+  - health states
+  - selector decisions
+
+  Session and message ids are stored only as SHA-256 hashes. Prompts, responses, headers and keys are never stored.
+- **Read**, read-only:
+  - OpenCode's `opencode.db`
+  - the models.dev cache
+  - OpenCode's `auth.json`, only to check which providers have a credential and to use your OpenRouter key for its Benchmarks API
+- **Network**: OpenRouter Benchmarks, the Artificial Analysis API, and the fixed provider model-list endpoints. Every request uses HTTPS, a fixed URL, refuses redirects and has a timeout. Keys appear in no log, error message or database.
+
+## Limitations
+
+- In-turn failover cannot tell when a TUI is attached with `opencode run --attach`. Subagent sessions are excluded from it, because aborting a subagent would fail the parent's task call.
+- Provider model lists injected through the `config` hook take effect the next time OpenCode starts.
+- If the plugin is not loaded but `oamp/auto` is still selected, the request fails after about 65 s of OpenCode's own retries against the discard port.
+- Specialist leaderboards cover very few free models (2 of 31 evidenced models on 2026-11-10). Terminal-Bench and BFCL render their tables client-side and are not collected.
+- Real-usage indicators only appear once a model has enough tool calls. Until then a new model sits at the pool prior.
+- `routeLimits.maxSessions` is counted, not reserved, so two processes starting at the same moment can briefly exceed it.
 
 ## Development
 
 ```sh
-npm install          # dev types only
-scripts/bun test     # unit tests
+npm install                # dev dependencies only: TypeScript and type definitions
+scripts/bun test           # unit tests (in-memory or temporary databases, fake fetch; no network)
 npx tsc --noEmit -p .
 ```
 
-Security notes: provider API keys are resolved from the provider's config (`{file:…}` and `{env:…}` references supported) or from OpenCode's `auth.json`. Keys are used only for the fixed HTTPS model-list endpoints, with redirects refused. They are never logged or stored.
+- [`docs/plan-v1.3.md`](docs/plan-v1.3.md): design and per-phase results (Korean). Earlier plan versions sit next to it.
+- [`docs/compatibility.md`](docs/compatibility.md): the OpenCode 1.19.5 behaviour this relies on.
+- [`docs/reviews/`](docs/reviews/): an independent code review and the response to it.
+
+## Attribution
+
+Benchmark data comes from [Artificial Analysis](https://artificialanalysis.ai) and [OpenRouter](https://openrouter.ai/rankings). Specialist leaderboard snapshots come from [Scale Labs](https://labs.scale.com/leaderboard). Every source and retrieval date is recorded with its data.
