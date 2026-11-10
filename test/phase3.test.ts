@@ -112,8 +112,8 @@ test("exploration only picks low-sample routes that are not known to be weak", (
 })
 
 function seedRoutes(db: ReturnType<typeof openDb>) {
-  const ins = db.query(`INSERT INTO routes (route_id, provider_id, model_id, canonical_id, match_conf, source, price_state, eligible, ctx_limit, status, first_seen, last_seen, updated_at)
-    VALUES (?, ?, ?, ?, 1, 'config', 'free_verified', 1, 200000, 'active', 0, 0, 0)`)
+  const ins = db.query(`INSERT INTO routes (route_id, provider_id, model_id, canonical_id, match_conf, source, price_state, eligible, tools, ctx_limit, meta_json, status, first_seen, last_seen, updated_at)
+    VALUES (?, ?, ?, ?, 1, 'config', 'free_verified', 1, 1, 200000, '{"cost":{"input":0,"output":0}}', 'active', 0, 0, 0)`)
   ins.run("opencode/good-free", "opencode", "good-free", "org/good")
   ins.run("xkiro/org/ok", "xkiro", "org/ok", "org/ok")
   db.query("INSERT INTO scores (route_id, pool, p_eff, computed_at) VALUES ('opencode/good-free','auto',80,0), ('xkiro/org/ok','auto',50,0)").run()

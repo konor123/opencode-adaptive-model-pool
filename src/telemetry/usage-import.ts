@@ -114,8 +114,13 @@ export function importUsage(oampDb: Database, opencodeDbPath: string, opts: { si
         finish, tool_calls, tool_schema_err, tool_other_err, edit_calls, edit_fail)
      VALUES (?, ?, ?, ?, 'history', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(msg_hash) DO UPDATE SET
-       ts = excluded.ts, in_tokens = excluded.in_tokens, in_bucket = excluded.in_bucket, e2e_ms = excluded.e2e_ms,
-       out_tokens = excluded.out_tokens, tps = excluded.tps, outcome = excluded.outcome, error_class = excluded.error_class,
+       -- rows measured live (kind primary/aux/probe) keep their timing and outcome; import only adds tool signals (review C06)
+       ts = CASE WHEN request_metrics.kind = 'history' THEN excluded.ts ELSE request_metrics.ts END,
+       e2e_ms = CASE WHEN request_metrics.kind = 'history' THEN excluded.e2e_ms ELSE request_metrics.e2e_ms END,
+       tps = CASE WHEN request_metrics.kind = 'history' THEN excluded.tps ELSE request_metrics.tps END,
+       outcome = CASE WHEN request_metrics.kind = 'history' THEN excluded.outcome ELSE request_metrics.outcome END,
+       error_class = CASE WHEN request_metrics.kind = 'history' THEN excluded.error_class ELSE request_metrics.error_class END,
+       in_tokens = excluded.in_tokens, in_bucket = excluded.in_bucket, out_tokens = excluded.out_tokens,
        finish = excluded.finish, tool_calls = excluded.tool_calls, tool_schema_err = excluded.tool_schema_err,
        tool_other_err = excluded.tool_other_err, edit_calls = excluded.edit_calls, edit_fail = excluded.edit_fail`,
   )

@@ -20,7 +20,7 @@ export interface SelectContext {
 
 export interface Decision {
   routeID: string
-  reason: "best" | "explore" | "sticky" | "sticky-pending" | "switch-better" | "failover" | "context" | "probation" | "fallback"
+  reason: "best" | "explore" | "sticky" | "sticky-pending" | "switch-better" | "failover" | "context" | "limit" | "probation" | "fallback"
   betterSince?: number
   top: { routeID: string; r: number }[]
 }
@@ -30,8 +30,10 @@ const fits = (c: RouteScore, tokens?: number) => !tokens || !c.ctxLimit || token
 export function selectRoute(cands: RouteScore[], state: SessionState, ctx: SelectContext): Decision {
   const sorted = [...cands].sort((a, b) => b.r - a.r || b.pEff - a.pEff || a.routeID.localeCompare(b.routeID))
   const top = sorted.slice(0, 4).map((c) => ({ routeID: c.routeID, r: Math.round(c.r * 10) / 10 }))
-  const fitsLimits = (c: RouteScore) =>
-    fits(c, ctx.estInputTokens) && (c.routeID === state.routeID || !c.maxSessions || ctx.activeSessions(c.routeID) < c.maxSessions)
+  // a session that already used a route keeps its slot; an inherited route that was never used must pass the limit (review C05)
+  const ownsSlot = (c: RouteScore) => c.routeID === state.routeID && state.turns > 0
+  const withinSessions = (c: RouteScore) => ownsSlot(c) || !c.maxSessions || ctx.activeSessions(c.routeID) < c.maxSessions
+  const fitsLimits = (c: RouteScore) => fits(c, ctx.estInputTokens) && withinSessions(c)
   const viable = sorted.filter((c) => c.health.selectable === true && fitsLimits(c))
   const probation = sorted.filter((c) => c.health.selectable === "probation" && fitsLimits(c))
   if (!viable.length) {
@@ -46,7 +48,8 @@ export function selectRoute(cands: RouteScore[], state: SessionState, ctx: Selec
   const cur = state.routeID ? sorted.find((c) => c.routeID === state.routeID) : undefined
   if (cur) {
     const curViable = viable.includes(cur)
-    if (!curViable) return { routeID: best.routeID, reason: cur.health.selectable !== true ? "failover" : "context", top }
+    if (!curViable)
+      return { routeID: best.routeID, reason: cur.health.selectable !== true ? "failover" : !fits(cur, ctx.estInputTokens) ? "context" : "limit", top }
     if (best.routeID === cur.routeID || best.r - cur.r < ctx.switchMargin) return { routeID: cur.routeID, reason: "sticky", top }
     const since = state.betterSince ?? ctx.now
     if (ctx.now - since >= ctx.switchHoldMs) return { routeID: best.routeID, reason: "switch-better", top }

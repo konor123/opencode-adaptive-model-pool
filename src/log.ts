@@ -4,9 +4,15 @@ import { dirname, join } from "node:path"
 
 let logPath: string | undefined
 
+/** Never throws (review C04): without a usable directory, logging is simply off. */
 export function initLog(dbPath: string) {
   logPath = dbPath === ":memory:" ? undefined : join(dirname(dbPath), "oamp.log")
-  if (logPath) mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 })
+  if (!logPath) return
+  try {
+    mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 })
+  } catch {
+    logPath = undefined
+  }
 }
 
 export function log(level: "info" | "warn" | "error", msg: string, data?: Record<string, unknown>) {

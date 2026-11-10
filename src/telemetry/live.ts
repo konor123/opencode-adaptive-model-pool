@@ -109,7 +109,8 @@ export class LiveTelemetry {
               ON CONFLICT(msg_hash) DO UPDATE SET kind = excluded.kind, ttft_ms = excluded.ttft_ms, ttfa_ms = excluded.ttfa_ms,
                 e2e_ms = excluded.e2e_ms, tps = COALESCE(excluded.tps, request_metrics.tps), outcome = excluded.outcome,
                 error_class = excluded.error_class, in_tokens = excluded.in_tokens, in_bucket = excluded.in_bucket, out_tokens = excluded.out_tokens`)
-      .run(start ?? this.now(), `${m.providerID}/${m.modelID}`, sha256(m.sessionID), sha256(m.id), kind, inTok, inBucket(inTok),
+      // ts = when the outcome became known, so outcomes order correctly against retry failures (review C07)
+      .run(completed ?? this.now(), `${m.providerID}/${m.modelID}`, sha256(m.sessionID), sha256(m.id), kind, inTok, inBucket(inTok),
         ttft, ttfa, e2e, out, tps, outcome, classifyError(m.error) ?? null, typeof m.finish === "string" ? m.finish : null)
     if (outcome === "error") this.onFailure?.(`${m.providerID}/${m.modelID}`, classifyError(m.error) ?? "other")
     if (outcome === "ok") this.onSuccess?.(`${m.providerID}/${m.modelID}`)

@@ -1,4 +1,5 @@
 // Discovery pipeline: provider /v1/models refresh (leased) + effective catalog → routes.
+import { readFileSync } from "node:fs"
 import { log } from "../log.ts"
 import type { OampOptions } from "../options.ts"
 import { applyAliases, buildAliasIndex } from "../identity/canonical.ts"
@@ -50,6 +51,16 @@ export async function refreshProviderModels(
   return result
 }
 
+/** Provider ids that have a credential in OpenCode's auth store (values are never read into memory beyond this check). */
+export function authProviders(authPath: string): Set<string> {
+  try {
+    const auth = JSON.parse(readFileSync(authPath, "utf8"))
+    return new Set(Object.entries(auth ?? {}).filter(([, v]: [string, any]) => v && (v.key || v.access || v.refresh)).map(([k]) => k))
+  } catch {
+    return new Set()
+  }
+}
+
 export function loadCaches(db: Db, opts: OampOptions): Record<string, CatalogModel[] | undefined> {
   const out: Record<string, CatalogModel[] | undefined> = {}
   for (const pid of Object.keys(opts.providerSync)) out[pid] = getProviderCache(db, pid)?.models
@@ -64,7 +75,7 @@ export function applyAndSync(db: Db, opts: OampOptions, cfg: any, modelsDev: Mod
 } {
   const caches = loadCaches(db, opts)
   const inject = injectProviderModels(cfg, caches)
-  const { models, covered } = effectiveCatalog(cfg, modelsDev, opts.providers, cfg?.experimental?.enableExperimentalModels === true, caches)
+  const { models, covered } = effectiveCatalog(cfg, modelsDev, opts.providers, cfg?.experimental?.enableExperimentalModels === true, caches, authProviders(opts.paths.opencodeAuth))
   applyAliases(models, buildAliasIndex(modelsDev))
   const routes = models.map((m) => buildRoute(m, opts))
   const sync = syncRoutes(db, routes, covered, now)

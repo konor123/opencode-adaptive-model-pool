@@ -47,12 +47,28 @@ export function toCatalogModel(providerID: string, modelID: string, e: any, sour
  * Effective catalog for the given providers.
  * cfg = OpenCode config object (after OAMP injection), modelsDev = models.dev cache.
  */
+/**
+ * Whether this OpenCode instance can call a provider (review C03): a provider block with an api key / file / env
+ * reference, a credential in OpenCode's auth store, one of the provider's env vars, or OpenCode's own provider
+ * (which serves its free models with a public key). A models.dev entry alone is not enough.
+ */
+export function providerConnected(pid: string, cfg: any, modelsDev: ModelsDev | undefined, authKeys: Set<string>): boolean {
+  if (pid === "opencode") return true
+  if (cfg?.disabled_providers?.includes?.(pid)) return false
+  if (Array.isArray(cfg?.enabled_providers) && !cfg.enabled_providers.includes(pid)) return false
+  if (typeof cfg?.provider?.[pid]?.options?.apiKey === "string" && cfg.provider[pid].options.apiKey) return true
+  if (authKeys.has(pid)) return true
+  const env: unknown = (modelsDev?.[pid] as any)?.env
+  return Array.isArray(env) && env.some((k) => typeof k === "string" && !!process.env[k])
+}
+
 export function effectiveCatalog(
   cfg: any,
   modelsDev: ModelsDev | undefined,
   providers: string[],
   experimental = false,
   enrich: Record<string, CatalogModel[] | undefined> = {},
+  authKeys?: Set<string>,
 ): {
   models: CatalogModel[]
   covered: string[]
@@ -63,6 +79,7 @@ export function effectiveCatalog(
     const pcfg = cfg?.provider?.[pid]
     const dev = modelsDev?.[pid]?.models
     if (!pcfg && !dev) continue
+    if (authKeys && !providerConnected(pid, cfg, modelsDev, authKeys)) continue
     covered.push(pid)
     const merged = new Map<string, { e: any; source: CatalogModel["source"] }>()
     for (const [mid, e] of Object.entries(dev ?? {})) merged.set(mid, { e, source: "models.dev" })

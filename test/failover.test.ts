@@ -8,11 +8,11 @@ import { openDb } from "../src/storage/db.ts"
 
 function setup(optsOver: object = {}) {
   const db = openDb(":memory:")
-  const ins = db.query(`INSERT INTO routes (route_id, provider_id, model_id, canonical_id, match_conf, source, price_state, eligible, ctx_limit, status, first_seen, last_seen, updated_at)
-    VALUES (?, ?, ?, ?, 1, 'config', 'free_verified', 1, 200000, 'active', 0, 0, 0)`)
+  const ins = db.query(`INSERT INTO routes (route_id, provider_id, model_id, canonical_id, match_conf, source, price_state, eligible, tools, ctx_limit, meta_json, status, first_seen, last_seen, updated_at)
+    VALUES (?, ?, ?, ?, 1, 'config', 'free_declared', 1, 1, 200000, '{}', 'active', 0, 0, 0)`)
   ins.run("a/one", "a", "one", "one"); ins.run("b/two", "b", "two", "two")
   db.query("INSERT INTO scores (route_id, pool, p_eff, computed_at) VALUES ('a/one','auto',80,0), ('b/two','auto',60,0)").run()
-  const opts = resolveOptions(optsOver)
+  const opts = resolveOptions({ providers: ["a", "b"], policy: { freeDeclared: ["a/*", "b/*"] }, ...optsOver })
   const now = 1_800_000_000_000
   const selector = new Selector({ db, opts, now: () => now, rand: () => 0.99 })
   const calls: any[] = []

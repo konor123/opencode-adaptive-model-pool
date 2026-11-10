@@ -15,6 +15,7 @@ import { LiveTelemetry } from "./telemetry/live.ts"
 import { importUsage, OVERLAP_MS } from "./telemetry/usage-import.ts"
 
 const FIRST_FETCH_TIMEOUT_MS = 5000
+const MAINTENANCE_INTERVAL_MS = 30 * 60_000
 
 /** In-memory marker provider: `oamp/<pool>` models are selection markers, never called (baseURL is a discard port). */
 export function injectMarkerProvider(cfg: any, pools: string[]) {
@@ -29,11 +30,12 @@ export function injectMarkerProvider(cfg: any, pools: string[]) {
 }
 
 export const OampPlugin = async (input: any, rawOptions?: unknown) => {
-  const opts = resolveOptions(rawOptions)
-  if (!opts.enabled) return {}
-  initLog(opts.storage.path)
+  let opts: ReturnType<typeof resolveOptions>
   let db: Db
   try {
+    opts = resolveOptions(rawOptions)
+    if (!opts.enabled) return {}
+    initLog(opts.storage.path)
     db = openDb(opts.storage.path)
   } catch (e: any) {
     log("error", "storage open failed; OAMP disabled for this process", { error: String(e?.message ?? e) })
@@ -41,9 +43,49 @@ export const OampPlugin = async (input: any, rawOptions?: unknown) => {
   }
 
   const telemetry = new LiveTelemetry(db)
+  let defaultModel: string | undefined // OpenCode's configured default model, captured in the config hook
+  let maintenanceCfg: any = { provider: {} }
+  let maintenanceTimer: ReturnType<typeof setInterval> | undefined
+  let maintaining = false
+  const maintenance = async () => {
+    if (maintaining) return
+    maintaining = true
+    try {
+      await refreshProviderModels(db, opts, maintenanceCfg).catch((e) => log("warn", "background refresh failed", { error: String(e) }))
+      let usageChanged = false
+      try {
+        const cursor = Number(kvGet(db, "usage:cursor") ?? 0)
+        const u = importUsage(db, opts.paths.opencodeDb, { sinceMs: Math.max(0, cursor - OVERLAP_MS) })
+        kvSet(db, "usage:cursor", String(Math.max(cursor, u.cursor)))
+        kvSet(db, "usage:last", JSON.stringify({ at: Date.now(), ...u }))
+        usageChanged = u.inserted > 0 || u.updated > 0 // updates carry tool signals for live rows (review C09)
+      } catch (e: any) {
+        log("warn", "usage import failed", { error: String(e?.message ?? e) })
+      }
+      try {
+        const b = await refreshBenchmarks(db, opts, maintenanceCfg)
+        const fetched = Object.values(b).some((x) => x.ok && x.count)
+        if (fetched || usageChanged || !kvGet(db, "scores:last")) {
+          const s = computePerformanceScores(db, opts, loadModelsDev(opts.paths.modelsDevCache)?.openrouter?.models)
+          selector.invalidate()
+          log("info", "performance scores", { benchmarks: b, routes: s.length, withEvidence: s.filter((x) => x.result.used.length).length })
+        }
+      } catch (e: any) {
+        log("warn", "benchmark/scoring failed", { error: String(e?.message ?? e) })
+      }
+    } finally {
+      maintaining = false
+    }
+  }
   const selector = new Selector({
     db,
     opts,
+    emergencyRoute: () => {
+      if (defaultModel && !defaultModel.startsWith(`${MARKER_PROVIDER}/`)) return defaultModel
+      const r = db.query(`SELECT r.route_id FROM routes r LEFT JOIN scores s ON s.route_id = r.route_id AND s.pool = 'auto'
+        WHERE r.status = 'active' AND r.eligible = 1 ORDER BY COALESCE(s.p_eff, 0) DESC LIMIT 1`).get() as { route_id: string } | null
+      return r?.route_id
+    },
     parentOf: async (sessionID) => {
       const r = await input?.client?.session?.get?.({ path: { id: sessionID } })
       return r?.data?.parentID ?? undefined
@@ -94,6 +136,7 @@ export const OampPlugin = async (input: any, rawOptions?: unknown) => {
       }),
     config: async (cfg: any) => {
       try {
+        if (typeof cfg?.model === "string") defaultModel = cfg.model
         injectMarkerProvider(cfg, Object.keys(opts.pools))
         // First run for a provider (no cache yet): fetch synchronously with a short timeout so it appears now.
         const caches = loadCaches(db, opts)
@@ -110,29 +153,14 @@ export const OampPlugin = async (input: any, rawOptions?: unknown) => {
         } catch {
           cfgSnapshot = { provider: {} }
         }
-        setTimeout(async () => {
-          await refreshProviderModels(db, opts, cfgSnapshot).catch((e) => log("warn", "background refresh failed", { error: String(e) }))
-          let usageChanged = false
-          try {
-            const cursor = Number(kvGet(db, "usage:cursor") ?? 0)
-            const u = importUsage(db, opts.paths.opencodeDb, { sinceMs: Math.max(0, cursor - OVERLAP_MS) })
-            kvSet(db, "usage:cursor", String(u.cursor))
-            kvSet(db, "usage:last", JSON.stringify({ at: Date.now(), ...u }))
-            usageChanged = u.inserted > 0
-          } catch (e: any) {
-            log("warn", "usage import failed", { error: String(e?.message ?? e) })
-          }
-          try {
-            const b = await refreshBenchmarks(db, opts, cfgSnapshot)
-            const fetched = Object.values(b).some((x) => x.ok && x.count)
-            if (fetched || usageChanged || !kvGet(db, "scores:last")) {
-              const s = computePerformanceScores(db, opts, loadModelsDev(opts.paths.modelsDevCache)?.openrouter?.models)
-              log("info", "performance scores", { benchmarks: b, routes: s.length, withEvidence: s.filter((x) => x.result.used.length).length })
-            }
-          } catch (e: any) {
-            log("warn", "benchmark/scoring failed", { error: String(e?.message ?? e) })
-          }
-        }, 0)
+        // background maintenance now and periodically for long-running processes (review C10); every step is
+        // due-checked and leased, so many processes on one host do the work once
+        maintenanceCfg = cfgSnapshot
+        setTimeout(maintenance, 0)
+        if (!maintenanceTimer) {
+          maintenanceTimer = setInterval(maintenance, MAINTENANCE_INTERVAL_MS)
+          ;(maintenanceTimer as any).unref?.()
+        }
       } catch (e: any) {
         log("error", "config hook failed; OpenCode config left as-is", { error: String(e?.message ?? e) })
       }

@@ -2,6 +2,7 @@
 // OpenCode then calls that route itself (Phase 0 E3), so OpenCode-only free models keep working.
 import { log } from "../log.ts"
 import type { OampOptions } from "../options.ts"
+import { loadHealth, verdict } from "../scoring/health.ts"
 import { computeRouteScores, type RouteScore } from "../scoring/routes.ts"
 import { type Db, kvGet } from "../storage/db.ts"
 import { selectRoute } from "./select.ts"
@@ -13,6 +14,8 @@ const SCORE_TTL_MS = 60_000
 export interface SelectorDeps {
   db: Db
   opts: OampOptions
+  /** last-resort real route ("provider/model"), e.g. OpenCode's configured default model (review C02) */
+  emergencyRoute?: () => string | undefined
   /** resolves a session's parent id when the session.created event has not been seen yet */
   parentOf?: (sessionID: string) => Promise<string | undefined>
   now?: () => number
@@ -47,6 +50,23 @@ export class Selector {
   }
 
   async onChatMessage(input: { sessionID: string; model?: { providerID: string; modelID: string } }, output: { message: any }): Promise<void> {
+    try {
+      await this.select(input, output)
+    } catch (e: any) {
+      log("error", "selector failed", { error: String(e?.message ?? e) })
+    }
+    // invariant: a marker model must never reach a provider call (its baseURL is a discard port)
+    if (output.message?.model?.providerID === MARKER_PROVIDER) {
+      const fb = this.d.emergencyRoute?.()
+      const i = fb ? fb.indexOf("/") : -1
+      if (fb && i > 0 && !fb.startsWith(`${MARKER_PROVIDER}/`)) {
+        output.message.model = { ...output.message.model, providerID: fb.slice(0, i), modelID: fb.slice(i + 1) }
+        log("warn", "selector: no usable candidate; using emergency route", { route: fb })
+      } else log("error", "selector: no candidate and no emergency route; marker left in place")
+    }
+  }
+
+  private async select(input: { sessionID: string; model?: { providerID: string; modelID: string } }, output: { message: any }): Promise<void> {
     const now = (this.d.now ?? Date.now)()
     const h = sha256(input.sessionID)
     let st = getSession(this.d.db, h)
@@ -83,7 +103,10 @@ export class Selector {
   choose(st: StoredSession, now: number, reasonOverride?: string): { route: RouteScore; reason: string } | undefined {
     const pool = st.pool
     const h = st.sessionHash
-    const cands = this.scores(now).filter((s) => s.pool === pool)
+    const health = loadHealth(this.d.db)
+    const cands = this.scores(now)
+      .filter((s) => s.pool === pool)
+      .map((s) => ({ ...s, health: verdict(health.get(s.routeID), now) }))
     if (!cands.length) {
       log("warn", "selector: no candidates; leaving model unchanged", { pool })
       return undefined

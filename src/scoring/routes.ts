@@ -1,5 +1,7 @@
 // Per-pool route scores R = (w_p·P_eff + w_l·L) × H (plan v1.3 §5.4–5.5), persisted in `scores`.
 import { globMatch, type OampOptions } from "../options.ts"
+import { buildRoute } from "../policy/eligibility.ts"
+import type { CatalogModel } from "../types.ts"
 import { type Db, kvGet, kvSet } from "../storage/db.ts"
 import { type HealthVerdict, loadHealth, verdict } from "./health.ts"
 import { availability, AVAILABILITY_FAILURES, DEFAULT_LATENCY_REFS, latencyScore, type LatencyRefs, percentile } from "./latency.ts"
@@ -43,10 +45,13 @@ export function latencyRefs(db: Db): LatencyRefs {
 
 export function computeRouteScores(db: Db, opts: OampOptions, now = Date.now()): RouteScore[] {
   const routes = db
-    .query(`SELECT r.route_id, r.provider_id, r.model_id, r.ctx_limit, r.status, s.p_eff FROM routes r
+    .query(`SELECT r.*, s.p_eff FROM routes r
             LEFT JOIN scores s ON s.route_id = r.route_id AND s.pool = 'auto'
-            WHERE r.status = 'active' AND r.eligible = 1`)
-    .all() as { route_id: string; provider_id: string; model_id: string; ctx_limit: number | null; p_eff: number | null }[]
+            WHERE r.status = 'active'`)
+    .all()
+    // the shared `eligible` column reflects whichever process synced last; re-evaluate with this process's policy (review C01)
+    .filter((row: any) => opts.providers.includes(row.provider_id) && eligibleForPolicy(row, opts)) as {
+      route_id: string; provider_id: string; model_id: string; ctx_limit: number | null; p_eff: number | null }[]
   const refs = latencyRefs(db)
   const samplesQ = db.query(`SELECT ts, ttfa_ms, e2e_ms, tps FROM request_metrics
     WHERE route_id = ? AND kind IN ('history','primary') AND outcome = 'ok' ORDER BY ts DESC LIMIT ${SAMPLE_LIMIT}`)
@@ -91,4 +96,19 @@ export function computeRouteScores(db: Db, opts: OampOptions, now = Date.now()):
   })()
   kvSet(db, "route-scores:last", JSON.stringify({ at: now, routes: base.length }), now)
   return out
+}
+
+/** Rebuild the catalog facts stored with a route and apply the current policy to them. */
+export function eligibleForPolicy(row: any, opts: OampOptions): boolean {
+  let meta: any = {}
+  try {
+    meta = JSON.parse(row.meta_json ?? "{}")
+  } catch {}
+  const m: CatalogModel = {
+    providerID: row.provider_id, modelID: row.model_id, name: meta.name, cost: meta.cost, accessTier: meta.accessTier, status: meta.status,
+    toolCall: row.tools === null || row.tools === undefined ? undefined : !!row.tools, reasoning: row.reasoning === null ? undefined : !!row.reasoning,
+    contextLimit: row.ctx_limit ?? undefined, outputLimit: row.out_limit ?? undefined, inputModalities: meta.in, outputModalities: meta.outMod,
+    source: row.source,
+  }
+  return buildRoute(m, opts).eligible
 }
