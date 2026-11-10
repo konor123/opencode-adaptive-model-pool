@@ -1,5 +1,7 @@
 # OpenCode Adaptive Model Pool (OAMP)
 
+English | [한국어](README.ko.md)
+
 OAMP is an [OpenCode](https://opencode.ai) plugin. It keeps a pool of models across your providers, ranks them by public benchmarks, your own real-usage quality and measured latency, and avoids routes that are failing. Pick the marker model **`oamp/auto`** and OAMP chooses the real model for every turn. The call itself is still made by OpenCode.
 
 Status: all planned phases (0–5) are implemented. The design history (in Korean) is in [`docs/`](docs/).
