@@ -1,6 +1,6 @@
 // OAMP OpenCode plugin entry (V1 hooks; external V2 plugins are not loadable in OpenCode 1.19.5, see docs/compatibility.md E1).
 // Phases 1–2: provider model discovery (config hook injection), route registry, real-usage import, benchmarks and
-// performance scores. No model selection yet (Phase 3).
+// performance scores; Phase 3: live telemetry, latency/availability scores and the oamp/* turn-level selector.
 import { applyAndSync, loadCaches, refreshProviderModels } from "./discovery/pipeline.ts"
 import { loadModelsDev } from "./discovery/models-dev.ts"
 import { initLog, log } from "./log.ts"
@@ -8,11 +8,25 @@ import { resolveOptions } from "./options.ts"
 import { type Db, kvGet, kvSet, openDb } from "./storage/db.ts"
 import { refreshBenchmarks } from "./benchmarks/refresh.ts"
 import { computePerformanceScores } from "./scoring/compute.ts"
+import { MARKER_PROVIDER, Selector } from "./selector/hook.ts"
+import { LiveTelemetry } from "./telemetry/live.ts"
 import { importUsage, OVERLAP_MS } from "./telemetry/usage-import.ts"
 
 const FIRST_FETCH_TIMEOUT_MS = 5000
 
-export const OampPlugin = async (_input: unknown, rawOptions?: unknown) => {
+/** In-memory marker provider: `oamp/<pool>` models are selection markers, never called (baseURL is a discard port). */
+export function injectMarkerProvider(cfg: any, pools: string[]) {
+  cfg.provider ??= {}
+  if (cfg.provider[MARKER_PROVIDER]) return
+  cfg.provider[MARKER_PROVIDER] = {
+    npm: "@ai-sdk/openai-compatible",
+    name: "OAMP (adaptive)",
+    options: { baseURL: "http://127.0.0.1:9/v1", apiKey: "unused" },
+    models: Object.fromEntries(pools.map((p) => [p, { name: `OAMP ${p}`, tool_call: true, cost: { input: 0, output: 0 } }])),
+  }
+}
+
+export const OampPlugin = async (input: any, rawOptions?: unknown) => {
   const opts = resolveOptions(rawOptions)
   if (!opts.enabled) return {}
   initLog(opts.storage.path)
@@ -24,9 +38,39 @@ export const OampPlugin = async (_input: unknown, rawOptions?: unknown) => {
     return {}
   }
 
+  const telemetry = new LiveTelemetry(db)
+  const selector = new Selector({
+    db,
+    opts,
+    parentOf: async (sessionID) => {
+      const r = await input?.client?.session?.get?.({ path: { id: sessionID } })
+      return r?.data?.parentID ?? undefined
+    },
+  })
+  telemetry.onFailure = (route, cls) => {
+    selector.invalidate()
+    log("warn", "route failure recorded", { route, errorClass: cls })
+  }
+  const safe = (name: string, f: () => unknown) => {
+    try {
+      const r = f()
+      if (r instanceof Promise) return r.catch((e: any) => log("error", `${name} failed`, { error: String(e?.message ?? e) }))
+    } catch (e: any) {
+      log("error", `${name} failed`, { error: String(e?.message ?? e) })
+    }
+  }
+
   return {
+    "chat.message": async (inp: any, out: any) => safe("chat.message", () => selector.onChatMessage(inp, out)),
+    "chat.headers": async (inp: any) => safe("chat.headers", () => telemetry.onHeaders(inp.sessionID, inp.agent)),
+    event: async ({ event }: any) =>
+      safe("event", () => {
+        telemetry.onEvent(event)
+        if (event?.type === "session.created") selector.onSessionCreated(event.properties?.info?.id, event.properties?.info?.parentID)
+      }),
     config: async (cfg: any) => {
       try {
+        injectMarkerProvider(cfg, Object.keys(opts.pools))
         // First run for a provider (no cache yet): fetch synchronously with a short timeout so it appears now.
         const caches = loadCaches(db, opts)
         const missing = Object.keys(opts.providerSync).filter((p) => cfg?.provider?.[p] && !caches[p]?.length)

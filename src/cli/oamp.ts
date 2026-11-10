@@ -1,5 +1,6 @@
 // oamp CLI: deterministic inspection without going through an LLM (plan v1.3 §9).
-//   oamp status | routes [--all] [--provider p] | refresh [--force] | usage [--full] | bench [--force] | rank [--all] | model <route>
+//   oamp status | routes [--all] [--provider p] | refresh [--force] | usage [--full] | bench [--force]
+//   | rank [pool] | perf | decisions [--limit n] | model <route>
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -10,6 +11,7 @@ import { resolveOptions } from "../options.ts"
 import { kvGet, kvSet, openDb } from "../storage/db.ts"
 import { refreshBenchmarks } from "../benchmarks/refresh.ts"
 import { computePerformanceScores } from "../scoring/compute.ts"
+import { computeRouteScores } from "../scoring/routes.ts"
 import { importUsage } from "../telemetry/usage-import.ts"
 
 /** Strip // and /* *\/ comments outside strings, and trailing commas. */
@@ -78,18 +80,30 @@ async function main(argv: string[]) {
     return
   }
   if (cmd === "rank") {
-    const all = flag("--all")
-    const rows = db.query(`SELECT r.route_id, r.price_state, r.eligible, s.p, s.p_eff, s.c, s.detail_json FROM routes r
-      JOIN scores s ON s.route_id = r.route_id AND s.pool = 'auto'
-      WHERE r.status = 'active' ${all ? "" : "AND r.eligible = 1"} ORDER BY s.p_eff DESC`).all() as any[]
+    // oamp rank [pool] — final route score R = (w_p·P_eff + w_l·L) × H, health-gated (what the selector uses)
+    const pool = rest.find((a) => !a.startsWith("--")) ?? "auto"
+    const scores = computeRouteScores(db, opts).filter((s) => s.pool === pool).sort((a, b) => b.r - a.r)
+    console.log(`pool ${pool}`)
+    console.log(`${pad("#", 3)} ${pad("route", 52)} ${pad("R", 6)} ${pad("P_eff", 6)} ${pad("L", 6)} ${pad("H", 5)} ${pad("n", 5)} health`)
+    scores.forEach((s, i) =>
+      console.log(`${pad(i + 1, 3)} ${pad(s.routeID, 52)} ${pad(s.r.toFixed(1), 6)} ${pad(s.pEff.toFixed(1), 6)} ${pad(s.l.toFixed(1), 6)} ${pad(s.h.toFixed(2), 5)} ${pad(s.samples, 5)} ${s.health.ok ? "ok" : `${s.health.reason} until ${new Date(s.health.until).toISOString()}`}`))
+    console.log(`${scores.length} eligible routes. Benchmark data: Artificial Analysis (artificialanalysis.ai), OpenRouter (openrouter.ai).`)
+    return
+  }
+  if (cmd === "perf") {
+    const rows = db.query(`SELECT r.route_id, s.p, s.p_eff, s.c, s.detail_json FROM routes r JOIN scores s ON s.route_id = r.route_id AND s.pool = 'auto'
+      WHERE r.status = 'active' AND r.eligible = 1 ORDER BY s.p_eff DESC`).all() as any[]
     console.log(`${pad("#", 3)} ${pad("route", 56)} ${pad("P_eff", 6)} ${pad("P", 6)} ${pad("c", 5)} ${pad("C/A/I", 17)} evidence`)
     rows.forEach((r, i) => {
       const d = JSON.parse(r.detail_json ?? "{}")
       const cat = d.categories ? `${d.categories.C.score.toFixed(0)}${d.categories.C.proxy ? "*" : ""}/${d.categories.A.score.toFixed(0)}/${d.categories.I.score.toFixed(0)}` : ""
-      console.log(`${pad(i + 1, 3)} ${pad(r.route_id, 56)} ${pad(r.p_eff.toFixed(1), 6)} ${pad(r.p.toFixed(1), 6)} ${pad(r.c.toFixed(2), 5)} ${pad(cat, 17)} ${(d.used ?? []).join(",")}`)
+      console.log(`${pad(i + 1, 3)} ${pad(r.route_id, 56)} ${pad((r.p_eff ?? 0).toFixed(1), 6)} ${pad((r.p ?? 0).toFixed(1), 6)} ${pad((r.c ?? 0).toFixed(2), 5)} ${pad(cat, 17)} ${(d.used ?? []).join(",")}`)
     })
-    console.log(`${rows.length} routes (P_eff = c·P + (1−c)·50; * = coding proxied from reasoning). Latency L and H arrive in Phase 3.`)
-    console.log("Benchmark data: Artificial Analysis (artificialanalysis.ai), OpenRouter (openrouter.ai).")
+    return
+  }
+  if (cmd === "decisions") {
+    const rows = db.query("SELECT ts, pool, substr(session_hash,1,10) s, chosen_route, reason, top4_json FROM rank_history ORDER BY id DESC LIMIT ?").all(Number(arg("--limit") ?? 20)) as any[]
+    for (const r of rows) console.log(`${new Date(r.ts).toISOString()} ${pad(r.pool, 5)} ${r.s} ${pad(r.chosen_route, 46)} ${pad(r.reason, 15)} ${r.top4_json}`)
     return
   }
   if (cmd === "model") {

@@ -553,7 +553,7 @@ schema_version(v)
 | 0 | §11 실험 | compatibility.md, PoC(`poc/phase0/`) | ✅ 완료(2026-11-10). E3 Go |
 | 1 | Discovery(**공급자 모델 갱신 포함, §4.1**)·Identity·Storage·Policy + opencode.db 부트스트랩 | 동적 Registry, `oamp status` | 5개 공급자 경로 등록, xkiro 모델이 OpenCode에 노출, 가격 상태·모달리티 필터 테스트 통과  ✅ 2026-11-10 완료: 경로 86개(eligible 57), xkiro 26개 노출, 이력 2,407건, 테스트 19개 통과, 전역 설치 |
 | 2 | Benchmark(OR·AA) + **자체 평가 최소 세트(앞당김)** + Performance Score | 경로별 P, c, 출처 이력 | 모든 활성 경로에 P_eff 산출, 출처 중복 없음  ✅ 2026-11-10 구현(아래 Phase 2 결과) |
-| 3 | 이벤트 관측 계측 + Latency Score + Selector(턴 단위 선택, sticky, 부모 상속) | `oamp/auto` 실사용, `oamp rank` | 실측 누적에 따라 순위가 바뀌고, 근소한 변동에는 바뀌지 않음 |
+| 3 | 이벤트 관측 계측 + Latency Score + Selector(턴 단위 선택, sticky, 부모 상속) | `oamp/auto` 실사용, `oamp rank` | 실측 누적에 따라 순위가 바뀌고, 근소한 변동에는 바뀌지 않음  ✅ 2026-11-10 구현(아래 Phase 3 결과) |
 | 4 | Health·다음 턴 전환·Probe(OpenCode 경유)·동시성 한도 + (선택) 같은 요청 전환 | 장애 내성 선택자 | §13 장애 시나리오 테스트 통과 |
 | 5 | 전문 스냅샷 어댑터·가중치 상관 분석·패키징 | 배포 패키지, 운영 문서 | 설치·제거 시 기존 설정 무변경 |
 
@@ -576,6 +576,22 @@ schema_version(v)
   - C 내부 가중치 조정: `aa_coding 0.45 / usage_edit 0.35 / swe_bench_pro 0.20`. A: `aa_agentic 0.35 / tau_bench 0.25 / usage_tools 0.25 / terminal_bench 0.15`.
 - 적용 결과: 2,461단계, 도구 호출 2,954회. 근거 있는 경로 32/86. deepseek-v4.1-flash는 C가 추론 대리값(61*)에서 실사용 편집 정확도 기반 100으로 바뀌었고, north-mini-code는 도구 인자 오류(약 6%)가 반영돼 하락했다.
 - 위임 기록: AA 수집기를 맡은 OpenCode worker(task_07f43cbbfe81)가 범위 밖 파일을 삭제해 중지시켰다(커밋된 `canonical.ts` 포함). Coordinator가 복원하고 직접 구현했다. 이후 위임은 **격리 worktree(`--worktree new-child`)**로만 한다.
+
+### Phase 3 결과 (2026-11-10)
+
+- **선택 표식 공급자**: `config` hook이 메모리에 `oamp` 공급자(`oamp/auto`, `oamp/fast`)를 넣는다. 설정 파일은 바꾸지 않는다. baseURL은 discard 포트라 실제로 호출되지 않는다.
+- **선택자(`chat.message`)**: 표식 모델이면 풀의 R 순으로 실제 경로를 골라 `output.message.model`을 바꾼다. 세션 상태(풀, 경로, 턴 수, 부모)는 SQLite `session_routes`에 둔다.
+  - 이후 턴이 실제 경로로 들어와도 같은 경로면 auto로 이어간다. 다른 실제 모델이 오면 수동 선택으로 보고 auto를 끈다.
+  - 하위 에이전트: `session.created.parentID`로 상속한다. 이벤트보다 hook이 먼저 오면 SDK `session.get`으로 부모를 확인한다.
+  - 규칙: sticky / 점수 차 5점 이상이 30분 유지되면 교체(`sticky-pending` → `switch-better`) / 현재 경로 장애 시 `failover` / 컨텍스트 부족 시 `context` / `routeLimits.maxSessions`(exaone 1) / 새 세션 첫 턴 5% 탐색(표본 10 미만이고 P_eff가 중앙값 이상인 경로) / 후보가 없어도 표식은 남기지 않음(`fallback`).
+- **실시간 계측**: `chat.headers` 시각에 가장 가까운 다음 assistant 단계를 묶어 TTFT·TTFA·E2E·TPS를 잰다. title 요청은 제외하고, compaction/summary는 `aux`로 분류한다. 해시 메시지 ID로 opencode.db 가져오기와 합친다. **OpenCode 재시도 이벤트(`session.status retry`)는 해당 경로의 실패로 즉시 기록**하고 선택 캐시를 무효화한다.
+- **점수**: `L = 0.35 S_TTFA + 0.45 S_E2E + 0.20 S_TPS`(로그 척도, 기준 범위는 이력 p10/p90을 처음 한 번 고정, TTFA는 기본값). EWMA α=0.25, 표본 축소 n0=10. `H = clamp(success_ewma, 0.5, 1)^2`(최근 50건, 사용자 중단과 context_overflow 제외, 표본 5 미만이면 0.9와 혼합). `R = (0.70 P_eff + 0.30 L) × H`, `fast` 풀은 0.4/0.6.
+- **최소 Health(Phase 4에서 정식화)**: 일시 오류는 연속 횟수에 따라 60→120→240→300초 쿨다운, 401/403/404는 24시간 제외.
+- **실환경 확인**(OpenCode 1.19.5, 전역 설치):
+  - `oamp/auto` → `opencode/deepseek-v4.1-flash-free`(R 1위)로 교체되어 도구 호출 응답(`auto-42`).
+  - 같은 세션 2턴째 `sticky`. task 하위 에이전트가 부모 auto를 상속(`sub-42`). 단계별 TTFT/TTFA/E2E 기록.
+  - 1위 경로에 임시 429 기록을 넣자 새 세션이 `nvidia/deepseek-ai/deepseek-v4.1-flash`로 회피(임시 기록은 삭제).
+  - 그 NVIDIA 경로가 실제로 96초 무응답 뒤 `Internal server error` → OpenCode가 같은 모델로 재시도하는 동안 턴이 길어졌다. → 재시도 이벤트 기록을 추가했다. **같은 턴 안의 전환은 Phase 4 E12(재시도 감지 → abort → 다른 경로로 continue) 실험 대상.**
 
 ## 13. 검증 기준 (v1.0 §13 + 추가)
 

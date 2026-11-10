@@ -2,7 +2,7 @@
 
 An [OpenCode](https://opencode.ai) plugin that keeps a pool of models across providers and ranks them by public benchmarks and measured latency. When you pick the marker model `oamp/auto`, OAMP chooses the real model for each turn. Model calls always go through OpenCode itself, so OpenCode-only free models keep working.
 
-Status: **Phase 2** (discovery, route registry, price/capability policy, real-usage import, benchmark ingestion, performance score). Model selection (`oamp/auto`) arrives in Phase 3. See `docs/plan-v1.3.md` and `docs/compatibility.md`.
+Status: **Phase 3**. Model selection via `oamp/auto` works: route scores R = (0.7·P_eff + 0.3·L) × H, live latency telemetry, sticky sessions, subagent inheritance, and cooldowns for failing routes. Phase 4 adds a full circuit breaker, probes and in-turn failover experiments. See `docs/plan-v1.3.md` and `docs/compatibility.md`.
 
 ## What Phase 1 does
 
@@ -10,6 +10,10 @@ Status: **Phase 2** (discovery, route registry, price/capability policy, real-us
 - **Route registry**: OAMP builds the effective catalog (models.dev cache plus config, with OpenCode's whitelist, blacklist and deprecated filters applied) and stores one route per `provider/model` in SQLite. A route missing from the catalog once is marked stale. Missing twice, it is retired.
 - **Policy**: each route gets a price state (`free_verified`, `free_quota`, `free_declared`, `paid`, `unknown`) and an eligibility decision (tool calling, text output, price, deny list).
 - **Real-usage import**: OAMP reads OpenCode's `opencode.db` *read-only* and incrementally. Every assistant step becomes a metrics row: latency, tokens, error class, and tool-call outcomes. It stores hashed ids and numbers only.
+
+## Using it
+
+Pick **`oamp/auto`** (or `oamp/fast`) in the TUI model picker, or run `opencode run --model oamp/auto "…"`. Each turn, OAMP replaces the marker with the best healthy route, and OpenCode makes the call itself. The session stays on that route unless the route fails, a clearly better one stays better for 30 minutes, or the context no longer fits. Picking any real model switches the session to manual.
 
 ## Phase 2: performance score
 
@@ -42,7 +46,9 @@ scripts/oamp routes [--all] [--provider xkiro]
 scripts/oamp refresh [--force] # fetch provider model lists now and rebuild routes
 scripts/oamp usage [--full]    # import real usage from opencode.db (incremental; --full re-reads everything), rescore
 scripts/oamp bench [--force]   # fetch OpenRouter + Artificial Analysis benchmarks, recompute scores
-scripts/oamp rank [--all]      # routes by P_eff with C/A/I breakdown and evidence
+scripts/oamp rank [pool]       # what the selector uses: R, P_eff, L, H, samples, health
+scripts/oamp perf              # performance only: P_eff with C/A/I breakdown and evidence
+scripts/oamp decisions         # recent selector decisions with reasons
 scripts/oamp model <route>     # full detail for one route
 ```
 

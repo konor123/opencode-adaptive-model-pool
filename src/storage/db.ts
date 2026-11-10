@@ -85,6 +85,20 @@ const MIGRATIONS: string[] = [
    ALTER TABLE request_metrics ADD COLUMN edit_calls INTEGER;
    ALTER TABLE request_metrics ADD COLUMN edit_fail INTEGER;
    DELETE FROM request_metrics WHERE kind = 'selfeval';`,
+  // v4: selector session state (one row per OpenCode session that uses an oamp/* marker model)
+  `CREATE TABLE session_routes (
+     session_hash TEXT PRIMARY KEY,
+     pool         TEXT NOT NULL,
+     auto         INTEGER NOT NULL DEFAULT 1,
+     route_id     TEXT,
+     better_since INTEGER,
+     turns        INTEGER NOT NULL DEFAULT 0,
+     parent_hash  TEXT,
+     created_at   INTEGER NOT NULL,
+     updated_at   INTEGER NOT NULL
+   );
+   CREATE INDEX session_routes_route ON session_routes(route_id, updated_at);
+   CREATE INDEX request_metrics_session ON request_metrics(session_hash, ts);`,
 ]
 
 export type Db = Database

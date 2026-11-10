@@ -3,11 +3,11 @@ import { acquireLease, kvGet, kvSet, openDb, releaseLease, schemaVersion } from 
 
 test("migrates to latest and is idempotent", () => {
   const db = openDb(":memory:")
-  expect(schemaVersion(db)).toBe(3)
+  expect(schemaVersion(db)).toBe(4)
   // second migrate is a no-op
   const { migrate } = require("../src/storage/db.ts")
   migrate(db)
-  expect(schemaVersion(db)).toBe(3)
+  expect(schemaVersion(db)).toBe(4)
 })
 
 test("lease excludes other holders until expiry", () => {
