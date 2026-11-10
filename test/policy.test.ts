@@ -68,3 +68,33 @@ test("alias index fills canonical ids across providers, skipping ambiguous ones"
   expect(canonicalOf(ms[0]!)).toEqual({ canonicalID: "cohere/north-mini-code-1-0", matchConf: 0.9 })
   expect(canonicalOf(ms[1]!)).toEqual({ canonicalID: "z/unknown", matchConf: 0.8 })
 })
+
+test("invalid numeric options fall back to defaults with a warning", () => {
+  const { validateOptions } = require("../src/options.ts")
+  const o = resolveOptions({
+    weights: { performance: -1, latency: Number.NaN, coding: 0, agentic: 0, reasoning: 0 },
+    latency: { ewmaAlpha: 0 },
+    selector: { explorationBudget: 3, maxSwitchesPerTurn: -2 },
+    scoring: { prior: 500 },
+    pools: { fast: { weights: { latency: "x" } } },
+    providers: "opencode",
+  })
+  expect(o.weights.performance).toBe(0.7)
+  expect(o.weights.latency).toBe(0.3)
+  expect([o.weights.coding, o.weights.agentic, o.weights.reasoning]).toEqual([0.55, 0.3, 0.15])
+  expect(o.latency.ewmaAlpha).toBe(0.25)
+  expect(o.selector.explorationBudget).toBe(0.05)
+  expect(o.selector.maxSwitchesPerTurn).toBe(2)
+  expect(o.scoring.prior).toBe("pool-median")
+  expect(o.pools.fast!.weights!.latency).toBeUndefined()
+  expect(o.providers).toEqual(DEFAULT_OPTIONS.providers)
+  expect(validateOptions(resolveOptions({}))).toEqual([])
+})
+
+test("resolving options never mutates the defaults", () => {
+  const before = JSON.stringify(DEFAULT_OPTIONS)
+  const o = resolveOptions({})
+  o.weights.performance = 0.1
+  o.pools.fast!.weights!.latency = 0.9
+  expect(JSON.stringify(DEFAULT_OPTIONS)).toBe(before)
+})

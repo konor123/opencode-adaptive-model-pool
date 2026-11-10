@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: string[] = [
   // v1
   `
   CREATE TABLE routes (
@@ -117,12 +117,16 @@ export function schemaVersion(db: Db): number {
   return row?.v ?? 0
 }
 
-export function migrate(db: Db): void {
+/**
+ * Forward-only migrations. A DB newer than this code (after a rollback) is left untouched: every migration only adds
+ * tables/columns, and queries name their columns, so older code keeps working on a newer schema.
+ */
+export function migrate(db: Db, migrations: string[] = MIGRATIONS): void {
   const tx = db.transaction(() => {
     const cur = schemaVersion(db)
-    for (let v = cur; v < MIGRATIONS.length; v++) db.exec(MIGRATIONS[v]!)
-    if (cur === 0) db.query("INSERT INTO schema_version (v) VALUES (?)").run(MIGRATIONS.length)
-    else if (cur < MIGRATIONS.length) db.query("UPDATE schema_version SET v = ?").run(MIGRATIONS.length)
+    for (let v = cur; v < migrations.length; v++) db.exec(migrations[v]!)
+    if (cur === 0) db.query("INSERT INTO schema_version (v) VALUES (?)").run(migrations.length)
+    else if (cur < migrations.length) db.query("UPDATE schema_version SET v = ?").run(migrations.length)
   })
   tx.immediate()
 }

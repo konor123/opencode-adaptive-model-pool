@@ -52,6 +52,7 @@ export class BenchmarkMapper {
   map(source: string, via: string, subject: string): SubjectMatch | undefined {
     if (via === "openrouter-api") return this.mapOr(subject)
     if (via === "aa-api") return this.mapAa(subject)
+    if (via === "snapshot-file") return subject.startsWith("canon:") ? { canonicalID: subject.slice(6), conf: 1.0 } : undefined
     return undefined
   }
 }

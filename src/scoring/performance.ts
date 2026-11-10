@@ -7,10 +7,12 @@ export const INDICATORS: Record<string, [Category, number]> = {
   aa_coding: ["C", 0.45],
   usage_edit: ["C", 0.35], // real usage: edit/write calls without model-caused failure
   swe_bench_pro: ["C", 0.2],
-  aa_agentic: ["A", 0.35],
-  tau_bench_airline: ["A", 0.25],
+  aa_agentic: ["A", 0.3],
+  tau_bench_airline: ["A", 0.2],
   usage_tools: ["A", 0.25], // real usage: tool calls with schema-valid arguments
-  terminal_bench: ["A", 0.15],
+  terminal_bench: ["A", 0.1],
+  mcp_atlas: ["A", 0.1],
+  bfcl: ["A", 0.05],
   aa_intelligence: ["I", 0.6],
   gpqa_diamond: ["I", 0.25],
   livebench: ["I", 0.15],

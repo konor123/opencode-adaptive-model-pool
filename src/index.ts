@@ -4,7 +4,7 @@
 import { applyAndSync, loadCaches, refreshProviderModels } from "./discovery/pipeline.ts"
 import { loadModelsDev } from "./discovery/models-dev.ts"
 import { initLog, log } from "./log.ts"
-import { resolveOptions } from "./options.ts"
+import { optionWarnings, resolveOptions } from "./options.ts"
 import { type Db, kvGet, kvSet, openDb } from "./storage/db.ts"
 import { refreshBenchmarks } from "./benchmarks/refresh.ts"
 import { computePerformanceScores } from "./scoring/compute.ts"
@@ -95,6 +95,7 @@ export const OampPlugin = async (input: any, rawOptions?: unknown) => {
   // (verified 2026-11-10). There, leave retries to OpenCode and switch on the next turn instead.
   const command = process.argv[2]
   const failover = new InTurnFailover({ db, opts, selector, client: command === "run" ? undefined : input?.client })
+  if (optionWarnings.length) log("warn", "invalid options replaced by defaults", { options: [...optionWarnings] })
   log("info", "plugin init", { command: command ?? "tui", inTurnFailover: opts.selector.inTurnFailover && command !== "run" })
   telemetry.onFailure = (route, cls) => {
     recordOutcome(db, route, cls)

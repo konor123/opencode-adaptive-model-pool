@@ -15,12 +15,12 @@ test("no evidence → neutral 50 with zero confidence", () => {
 
 test("weights renormalize inside a category and coverage reflects missing indicators", () => {
   const r = performance({ aa_coding: ind(80), aa_agentic: ind(60), aa_intelligence: ind(40) }, NOW)
-  for (const [k, s, c] of [["C", 80, 0.45], ["A", 60, 0.35], ["I", 40, 0.6]] as const) {
+  for (const [k, s, c] of [["C", 80, 0.45], ["A", 60, 0.3], ["I", 40, 0.6]] as const) {
     expect(r.categories[k].score).toBeCloseTo(s)
     expect(r.categories[k].coverage).toBeCloseTo(c)
   }
   expect(r.p).toBeCloseTo(0.55 * 80 + 0.3 * 60 + 0.15 * 40)
-  expect(r.coverage).toBeCloseTo(0.55 * 0.45 + 0.3 * 0.35 + 0.15 * 0.6)
+  expect(r.coverage).toBeCloseTo(0.55 * 0.45 + 0.3 * 0.3 + 0.15 * 0.6)
   expect(r.independence).toBe(0.7) // single origin
   expect(r.c).toBeCloseTo(r.coverage * 1 * 1 * 0.7)
   expect(r.pEff).toBeCloseTo(r.c * r.p + (1 - r.c) * 50)

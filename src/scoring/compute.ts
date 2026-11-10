@@ -45,7 +45,7 @@ export function computePerformanceScores(db: Db, opts: OampOptions, modelsDevOpe
     modelsDevOpenrouter,
   )
   const obs = loadObservations(db).filter((o) => !o.benchmark.startsWith("speed_"))
-  const refs = ensureReferenceRanges(db, obs)
+  const refs = ensureReferenceRanges(db, obs) // snapshot populations (incl. unmapped rows) shape their own ranges
 
   // canonical → indicator → best observation
   type Cand = { ind: Indicator; viaRank: number }

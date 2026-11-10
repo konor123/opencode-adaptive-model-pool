@@ -6,6 +6,7 @@ import type { OampOptions } from "../options.ts"
 import { acquireLease, type Db, kvGet, kvSet, releaseLease } from "../storage/db.ts"
 import { AaFetchError, type AaModel, fetchAaModels } from "./artificial-analysis.ts"
 import { fetchOrBenchmarks } from "./openrouter.ts"
+import { loadSnapshots } from "./snapshots.ts"
 import { storeObservations } from "./store.ts"
 import type { BenchObservation } from "./types.ts"
 
@@ -92,6 +93,13 @@ export async function refreshBenchmarks(
     }
   } finally {
     releaseLease(db, "benchmarks", holder)
+  }
+  // local versioned snapshots: cheap and idempotent, stored on every refresh
+  try {
+    const snaps = loadSnapshots()
+    res.snapshots = { ok: true, count: storeObservations(db, snaps, now) }
+  } catch (e: any) {
+    res.snapshots = { ok: false, error: String(e?.message ?? e) }
   }
   for (const [k, v] of Object.entries(res)) if (!v.ok && v.error) log("warn", "benchmark refresh failed", { source: k, error: v.error })
   return res

@@ -1,6 +1,7 @@
 // oamp CLI: deterministic inspection without going through an LLM (plan v1.3 §9).
 //   oamp status | routes [--all] [--provider p] | refresh [--force] | usage [--full] | bench [--force]
 //   | rank [pool] | perf | decisions [--limit n] | model <route> | health | probe <route>
+//   | install | uninstall [--config path] | doctor | stats [--days n]
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -13,6 +14,12 @@ import { refreshBenchmarks } from "../benchmarks/refresh.ts"
 import { computePerformanceScores } from "../scoring/compute.ts"
 import { computeRouteScores } from "../scoring/routes.ts"
 import { probeRoute } from "../health/probe.ts"
+import { editConfigFile, pluginSpec } from "../install/config-edit.ts"
+import { benchmarkVsUsage, kpis } from "./analysis.ts"
+import { optionWarnings } from "../options.ts"
+import { authProviders } from "../discovery/pipeline.ts"
+import { providerConnected } from "../discovery/models-dev.ts"
+import { MIGRATIONS, schemaVersion } from "../storage/db.ts"
 import { loadHealth, recordOutcome, verdict } from "../scoring/health.ts"
 import { importUsage } from "../telemetry/usage-import.ts"
 
@@ -60,8 +67,21 @@ export function oampPluginOptions(cfg: any): unknown {
 
 const pad = (s: unknown, n: number) => String(s ?? "").padEnd(n).slice(0, n)
 
+const REPO_ROOT = join(import.meta.dir, "../..")
+export function opencodeConfigPath(): string {
+  const dir = join(homedir(), ".config/opencode")
+  return existsSync(join(dir, "opencode.jsonc")) ? join(dir, "opencode.jsonc") : join(dir, "opencode.json")
+}
+
 async function main(argv: string[]) {
   const [cmd = "status", ...rest] = argv
+  if (cmd === "install" || cmd === "uninstall") {
+    const path = rest.includes("--config") ? rest[rest.indexOf("--config") + 1]! : opencodeConfigPath()
+    const r = editConfigFile(path, cmd, pluginSpec(REPO_ROOT))
+    console.log(JSON.stringify({ config: path, ...(r.changed ? { changed: true, backup: r.backup } : r) }, null, 2))
+    if (r.changed) console.log(cmd === "install" ? "Restart OpenCode; then pick oamp/auto." : "Restart OpenCode. OAMP data stays in ~/.local/share/oamp (delete it to remove all traces).")
+    return
+  }
   const cfg = loadOpencodeConfig()
   const opts = resolveOptions(oampPluginOptions(cfg))
   initLog(opts.storage.path)
@@ -101,6 +121,38 @@ async function main(argv: string[]) {
       const cat = d.categories ? `${d.categories.C.score.toFixed(0)}${d.categories.C.proxy ? "*" : ""}/${d.categories.A.score.toFixed(0)}/${d.categories.I.score.toFixed(0)}` : ""
       console.log(`${pad(i + 1, 3)} ${pad(r.route_id, 56)} ${pad((r.p_eff ?? 0).toFixed(1), 6)} ${pad((r.p ?? 0).toFixed(1), 6)} ${pad((r.c ?? 0).toFixed(2), 5)} ${pad(cat, 17)} ${(d.used ?? []).join(",")}`)
     })
+    return
+  }
+  if (cmd === "doctor") {
+    const checks: [string, boolean, string][] = []
+    const spec = pluginSpec(REPO_ROOT)
+    const installed = (cfg?.plugin ?? []).some((p: any) => (Array.isArray(p) ? String(p[0]) : String(p)) === spec)
+    checks.push(["plugin entry in OpenCode config", installed, installed ? spec : `run: scripts/oamp install`])
+    checks.push(["options valid", optionWarnings.length === 0, optionWarnings.join(", ") || "ok"])
+    checks.push(["storage schema", schemaVersion(db) === MIGRATIONS.length, `v${schemaVersion(db)} (code v${MIGRATIONS.length})`])
+    const dev = loadModelsDev(opts.paths.modelsDevCache)
+    checks.push(["models.dev cache", !!dev, opts.paths.modelsDevCache])
+    const auth = authProviders(opts.paths.opencodeAuth)
+    for (const p of opts.providers) checks.push([`provider ${p} connected`, providerConnected(p, cfg, dev, auth), ""])
+    const routes = db.query("SELECT count(*) n, sum(eligible) e FROM routes WHERE status = 'active'").get() as { n: number; e: number }
+    checks.push(["eligible routes", (routes.e ?? 0) > 0, `${routes.e ?? 0}/${routes.n}`])
+    for (const k of ["bench-sync:openrouter", "bench-sync:aa", "usage:last", "route-scores:last"]) {
+      const v = kvGet(db, k)
+      const at = v ? JSON.parse(v).at : undefined
+      checks.push([k, !!at && Date.now() - at < 3 * 86_400_000, at ? new Date(at).toISOString() : "never"])
+    }
+    const logPath = join(opts.storage.path, "..", "oamp.log")
+    const errs = existsSync(logPath) ? readFileSync(logPath, "utf8").split("\n").filter((l) => l.includes('"level":"error"') && Date.parse(JSON.parse(l).ts) > Date.now() - 86_400_000).length : 0
+    checks.push(["plugin errors (24 h)", errs === 0, String(errs)])
+    for (const [name, ok, detail] of checks) console.log(`${ok ? "ok  " : "FAIL"} ${pad(name, 32)} ${detail}`)
+    process.exitCode = checks.every((c) => c[1]) ? 0 : 1
+    return
+  }
+  if (cmd === "stats") {
+    const days = Number(arg("--days") ?? 7)
+    const k = kpis(db, Date.now() - days * 86_400_000)
+    const a = benchmarkVsUsage(db, opts)
+    console.log(JSON.stringify({ windowDays: days, kpis: k, benchmarkVsUsage: a }, null, 2))
     return
   }
   if (cmd === "health") {

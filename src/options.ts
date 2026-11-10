@@ -94,13 +94,14 @@ function merge<T>(base: T, over: unknown, freeForm = false): T {
 const expandHome = (p: string) => (p.startsWith("~/") ? join(HOME, p.slice(2)) : p)
 
 export function resolveOptions(raw?: unknown): OampOptions {
-  let o = merge(DEFAULT_OPTIONS, raw ?? {})
+  let o = merge(structuredClone(DEFAULT_OPTIONS), raw ?? {})
   // operational/test override, e.g. OAMP_OPTIONS='{"storage":{"path":"/tmp/x.db"}}'
   if (process.env.OAMP_OPTIONS) {
     try {
       o = merge(o, JSON.parse(process.env.OAMP_OPTIONS))
     } catch {}
   }
+  validateOptions(o)
   o.storage.path = expandHome(o.storage.path)
   o.benchmarks.artificialAnalysis.keyFile = expandHome(o.benchmarks.artificialAnalysis.keyFile)
   for (const k of Object.keys(o.paths) as (keyof OampOptions["paths"])[]) o.paths[k] = expandHome(o.paths[k])
@@ -111,4 +112,55 @@ export function resolveOptions(raw?: unknown): OampOptions {
 export function globMatch(pattern: string, value: string): boolean {
   const re = new RegExp("^" + pattern.split("*").map((s) => s.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$")
   return re.test(value)
+}
+
+/** Problems found by the last resolveOptions call (reported by the plugin log and `oamp doctor`). */
+export const optionWarnings: string[] = []
+
+const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v)
+
+/**
+ * Numeric options must be finite and non-negative, fractions must be within [0, 1], and weight groups must not sum
+ * to zero. Invalid values fall back to their defaults so a typo can never produce NaN scores (review test gap).
+ */
+export function validateOptions(o: OampOptions): string[] {
+  const w: string[] = []
+  const fix = (path: string, ok: boolean, set: () => void) => {
+    if (!ok) {
+      w.push(path)
+      set()
+    }
+  }
+  const D = DEFAULT_OPTIONS
+  const nonNeg = (obj: any, def: any, prefix: string, keys: string[]) => {
+    for (const k of keys) fix(`${prefix}.${k}`, isNum(obj[k]) && obj[k] >= 0, () => (obj[k] = def[k]))
+  }
+  nonNeg(o.weights, D.weights, "weights", ["performance", "latency", "coding", "agentic", "reasoning"])
+  fix("weights.performance+latency", o.weights.performance + o.weights.latency > 0, () => { o.weights.performance = D.weights.performance; o.weights.latency = D.weights.latency })
+  fix("weights.coding+agentic+reasoning", o.weights.coding + o.weights.agentic + o.weights.reasoning > 0, () => {
+    o.weights.coding = D.weights.coding; o.weights.agentic = D.weights.agentic; o.weights.reasoning = D.weights.reasoning
+  })
+  nonNeg(o.latency, D.latency, "latency", ["ttfa", "e2e", "tps", "priorWeight"])
+  fix("latency.ttfa+e2e+tps", o.latency.ttfa + o.latency.e2e + o.latency.tps > 0, () => { o.latency.ttfa = D.latency.ttfa; o.latency.e2e = D.latency.e2e; o.latency.tps = D.latency.tps })
+  fix("latency.ewmaAlpha", isNum(o.latency.ewmaAlpha) && o.latency.ewmaAlpha > 0 && o.latency.ewmaAlpha <= 1, () => (o.latency.ewmaAlpha = D.latency.ewmaAlpha))
+  nonNeg(o.selector, D.selector, "selector", ["switchMargin", "switchHoldMinutes", "maxSwitchesPerTurn"])
+  fix("selector.explorationBudget", isNum(o.selector.explorationBudget) && o.selector.explorationBudget >= 0 && o.selector.explorationBudget <= 1, () => (o.selector.explorationBudget = D.selector.explorationBudget))
+  nonNeg(o.refresh, D.refresh, "refresh", ["providerModelsHours", "catalogHours", "benchmarkHours"])
+  if (o.scoring.prior !== "pool-median") fix("scoring.prior", isNum(o.scoring.prior) && o.scoring.prior >= 0 && o.scoring.prior <= 100, () => (o.scoring.prior = D.scoring.prior))
+  for (const [name, pool] of Object.entries(o.pools)) {
+    for (const k of ["performance", "latency"] as const) {
+      const v = pool?.weights?.[k]
+      if (v !== undefined) fix(`pools.${name}.weights.${k}`, isNum(v) && v >= 0, () => delete pool.weights![k])
+    }
+  }
+  if (!Object.keys(o.pools).length) { w.push("pools"); o.pools = structuredClone(D.pools) }
+  for (const k of ["providers", "policy.freeDeclared", "policy.deny", "policy.quotaProviders"] as const) {
+    const [a, b] = k.split(".") as [keyof OampOptions, string?]
+    const holder: any = b ? (o as any)[a] : o
+    const key = b ?? a
+    const def: any = b ? (D as any)[a][b] : (D as any)[a]
+    fix(k, Array.isArray(holder[key]) && holder[key].every((x: unknown) => typeof x === "string"), () => (holder[key] = structuredClone(def)))
+  }
+  optionWarnings.splice(0, optionWarnings.length, ...w)
+  return w
 }

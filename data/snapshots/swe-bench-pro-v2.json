@@ -1,0 +1,88 @@
+{
+ "benchmark": "swe_bench_pro",
+ "version": "public-v2@2026-09-22",
+ "source": "Scale Labs SWE-Bench Pro V2 leaderboard",
+ "url": "https://labs.scale.com/leaderboard/swe_bench_pro_public_v2",
+ "updated": "2026-09-22",
+ "retrieved": "2026-11-10",
+ "unit": "resolved %",
+ "harness_note": "mixed harnesses (Claude Code, Codex, mini-swe-agent) as listed; treated as one series",
+ "citation": "Source: Scale Labs SWE-Bench Pro V2 (labs.scale.com/leaderboard/swe_bench_pro_public_v2), retrieved 2026-11-10",
+ "rows": [
+  {
+   "name": "Opus 5 (Claude Code) xhigh",
+   "score": 98.0
+  },
+  {
+   "name": "Fable 5.1 (Claude Code) high",
+   "score": 92.2
+  },
+  {
+   "name": "Gemini 4 Argon (mini-swe-agent) high",
+   "score": 92.16
+  },
+  {
+   "name": "GPT-6 Astra (Codex) high",
+   "score": 90.2
+  },
+  {
+   "name": "Muse Wonder 1.0 (mini-swe-agent) xhigh",
+   "score": 90.2
+  },
+  {
+   "name": "Kimi-K3 (mini-swe-agent) max",
+   "score": 88.2
+  },
+  {
+   "name": "Sonnet 5 (Claude Code) xhigh",
+   "score": 88.2
+  },
+  {
+   "name": "GPT-5.6 Terra (Codex) xhigh",
+   "score": 86.3
+  },
+  {
+   "name": "Inkling 2 Small",
+   "score": 86.27
+  },
+  {
+   "name": "Minimax M3p1 Flash (mini-swe-agent) xhigh",
+   "score": 84.31
+  },
+  {
+   "name": "GLM-5.3 (mini-swe-agent) max",
+   "score": 84.3
+  },
+  {
+   "name": "GPT-5.6 Sol (Codex) xhigh",
+   "score": 82.4
+  },
+  {
+   "name": "Muse Spark Open (mini-swe-agent) xhigh",
+   "score": 82.35
+  },
+  {
+   "name": "Sonnet 5.5 (mini-swe-agent) xhigh",
+   "score": 70.59
+  },
+  {
+   "name": "Gemini 3.8 Flash (mini-swe-agent) high",
+   "score": 58.8
+  },
+  {
+   "name": "Inkling (mini-swe-agent) xhigh",
+   "score": 56.9
+  },
+  {
+   "name": "Haiku 5.5 (mini-swe-agent) high",
+   "score": 52.94
+  },
+  {
+   "name": "Haiku 4.5 (Claude Code) xhigh",
+   "score": 25.5
+  }
+ ],
+ "map": {
+  "Minimax M3p1 Flash (mini-swe-agent) xhigh": "minimax/minimax-m3.1-flash"
+ }
+}

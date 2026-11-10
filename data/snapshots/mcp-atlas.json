@@ -1,0 +1,163 @@
+{
+ "benchmark": "mcp_atlas",
+ "version": "2026-04-update",
+ "source": "Scale Labs MCP Atlas leaderboard",
+ "url": "https://labs.scale.com/leaderboard/mcp_atlas",
+ "updated": "2026-04-08",
+ "retrieved": "2026-11-10",
+ "unit": "pass rate %",
+ "citation": "Source: Scale Labs MCP Atlas (labs.scale.com/leaderboard/mcp_atlas), retrieved 2026-11-10",
+ "rows": [
+  {
+   "name": "Gemini-4-Argon",
+   "score": 90.7
+  },
+  {
+   "name": "Muse Spark 1.1",
+   "score": 88.1
+  },
+  {
+   "name": "Fable 5.1",
+   "score": 87.2
+  },
+  {
+   "name": "claude-opus-5 (xhigh)",
+   "score": 85.8
+  },
+  {
+   "name": "Opus 5.5",
+   "score": 85.4
+  },
+  {
+   "name": "Inkling 2 Small",
+   "score": 85.4
+  },
+  {
+   "name": "Qwen3.8-2.4T-A95B (xHigh)",
+   "score": 84.5
+  },
+  {
+   "name": "GLM 5.3",
+   "score": 84.2
+  },
+  {
+   "name": "Gemini 3.5 Flash (high)",
+   "score": 83.6
+  },
+  {
+   "name": "Claude Fable 5",
+   "score": 83.3
+  },
+  {
+   "name": "kimi-k3 (max)",
+   "score": 82.3
+  },
+  {
+   "name": "Muse Spark",
+   "score": 82.2
+  },
+  {
+   "name": "claude-opus-4-8 (max)",
+   "score": 82.2
+  },
+  {
+   "name": "gpt-5.6 (sol)",
+   "score": 81.8
+  },
+  {
+   "name": "Inkling-small",
+   "score": 79.2
+  },
+  {
+   "name": "claude-opus-4-7 (max)",
+   "score": 79.1
+  },
+  {
+   "name": "gemini-3.1-pro-preview (high)",
+   "score": 78.2
+  },
+  {
+   "name": "glm-5p2",
+   "score": 77.8
+  },
+  {
+   "name": "claude-opus-4-6 (max)",
+   "score": 76.8
+  },
+  {
+   "name": "Inkling (xHigh)",
+   "score": 76.0
+  },
+  {
+   "name": "glm-5p1",
+   "score": 75.6
+  },
+  {
+   "name": "gpt-5.5 (xhigh)",
+   "score": 75.3
+  },
+  {
+   "name": "gpt-5.4 (xhigh)",
+   "score": 70.6
+  },
+  {
+   "name": "gemini-3-pro-preview",
+   "score": 70.3
+  },
+  {
+   "name": "claude-opus-4-5 (high)",
+   "score": 69.8
+  },
+  {
+   "name": "claude-sonnet-4-6",
+   "score": 69.5
+  },
+  {
+   "name": "gpt-5.2 (xhigh)",
+   "score": 67.6
+  },
+  {
+   "name": "kimi-k2p5",
+   "score": 64.4
+  },
+  {
+   "name": "Nemotron 3 Ultra (thinking)",
+   "score": 63.1
+  },
+  {
+   "name": "gemini-3-flash-preview",
+   "score": 62.0
+  },
+  {
+   "name": "claude-sonnet-4-5 (thinking)",
+   "score": 59.5
+  },
+  {
+   "name": "glm-4p7",
+   "score": 58.1
+  },
+  {
+   "name": "gemini-3.1-flash-lite (high)",
+   "score": 57.1
+  },
+  {
+   "name": "gpt-5.4-mini (xhigh)",
+   "score": 56.7
+  },
+  {
+   "name": "gpt-5.1 (high)",
+   "score": 50.1
+  },
+  {
+   "name": "o3-pro",
+   "score": 44.5
+  },
+  {
+   "name": "claude-haiku-4-5",
+   "score": 40.2
+  }
+ ],
+ "map": {
+  "Nemotron 3 Ultra (thinking)": "nvidia/nemotron-3-ultra-550b-a55b"
+ }
+}
