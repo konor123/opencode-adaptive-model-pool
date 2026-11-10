@@ -5,7 +5,7 @@ import type { OampOptions } from "../options.ts"
 import { computeRouteScores, type RouteScore } from "../scoring/routes.ts"
 import { type Db, kvGet } from "../storage/db.ts"
 import { selectRoute } from "./select.ts"
-import { activeSessionsOn, getSession, lastInputTokens, putSession, recordDecision, sha256 } from "./state.ts"
+import { activeSessionsOn, getSession, lastInputTokens, putSession, recordDecision, sha256, type StoredSession } from "./state.ts"
 
 export const MARKER_PROVIDER = "oamp"
 const SCORE_TTL_MS = 60_000
@@ -74,11 +74,19 @@ export class Selector {
       }
     }
 
+    const chosen = this.choose(st, now)
+    if (!chosen) return
+    output.message.model = { ...(output.message.model ?? {}), providerID: chosen.route.providerID, modelID: chosen.route.modelID }
+  }
+
+  /** Pick (and persist) the route for the next request of a session. */
+  choose(st: StoredSession, now: number, reasonOverride?: string): { route: RouteScore; reason: string } | undefined {
     const pool = st.pool
+    const h = st.sessionHash
     const cands = this.scores(now).filter((s) => s.pool === pool)
     if (!cands.length) {
       log("warn", "selector: no candidates; leaving model unchanged", { pool })
-      return
+      return undefined
     }
     const decision = selectRoute(cands, { pool, routeID: st.routeID, betterSince: st.betterSince, turns: st.turns }, {
       now,
@@ -86,13 +94,14 @@ export class Selector {
       activeSessions: (r) => activeSessionsOn(this.d.db, r, h, now),
       switchMargin: this.d.opts.selector.switchMargin,
       switchHoldMs: this.d.opts.selector.switchHoldMinutes * 60_000,
-      explorationBudget: st.turns === 0 && !st.parentHash ? this.d.opts.selector.explorationBudget : 0,
+      explorationBudget: st.turns === 0 && !st.parentHash && !reasonOverride ? this.d.opts.selector.explorationBudget : 0,
       rand: this.d.rand ?? Math.random,
     })
-    const chosen = cands.find((c) => c.routeID === decision.routeID)!
-    output.message.model = { ...(output.message.model ?? {}), providerID: chosen.providerID, modelID: chosen.modelID }
-    putSession(this.d.db, { ...st, routeID: chosen.routeID, betterSince: decision.betterSince, turns: st.turns + 1 }, now)
-    recordDecision(this.d.db, pool, h, chosen.routeID, decision.top, decision.reason, now)
-    log("info", "selector: route chosen", { session: h.slice(0, 12), pool, route: chosen.routeID, reason: decision.reason, top: decision.top })
+    const route = cands.find((c) => c.routeID === decision.routeID)!
+    const reason = reasonOverride && decision.routeID !== st.routeID ? reasonOverride : decision.reason
+    putSession(this.d.db, { ...st, routeID: route.routeID, betterSince: decision.betterSince, turns: st.turns + (reasonOverride ? 0 : 1) }, now)
+    recordDecision(this.d.db, pool, h, route.routeID, decision.top, reason, now)
+    log("info", "selector: route chosen", { session: h.slice(0, 12), pool, route: route.routeID, reason, top: decision.top })
+    return { route, reason }
   }
 }

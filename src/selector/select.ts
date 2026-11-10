@@ -20,7 +20,7 @@ export interface SelectContext {
 
 export interface Decision {
   routeID: string
-  reason: "best" | "explore" | "sticky" | "sticky-pending" | "switch-better" | "failover" | "context" | "fallback"
+  reason: "best" | "explore" | "sticky" | "sticky-pending" | "switch-better" | "failover" | "context" | "probation" | "fallback"
   betterSince?: number
   top: { routeID: string; r: number }[]
 }
@@ -30,12 +30,15 @@ const fits = (c: RouteScore, tokens?: number) => !tokens || !c.ctxLimit || token
 export function selectRoute(cands: RouteScore[], state: SessionState, ctx: SelectContext): Decision {
   const sorted = [...cands].sort((a, b) => b.r - a.r || b.pEff - a.pEff || a.routeID.localeCompare(b.routeID))
   const top = sorted.slice(0, 4).map((c) => ({ routeID: c.routeID, r: Math.round(c.r * 10) / 10 }))
-  const viable = sorted.filter(
-    (c) => c.health.ok && fits(c, ctx.estInputTokens) && (c.routeID === state.routeID || !c.maxSessions || ctx.activeSessions(c.routeID) < c.maxSessions),
-  )
+  const fitsLimits = (c: RouteScore) =>
+    fits(c, ctx.estInputTokens) && (c.routeID === state.routeID || !c.maxSessions || ctx.activeSessions(c.routeID) < c.maxSessions)
+  const viable = sorted.filter((c) => c.health.selectable === true && fitsLimits(c))
+  const probation = sorted.filter((c) => c.health.selectable === "probation" && fitsLimits(c))
   if (!viable.length) {
+    // last resort before fallback: a route whose cooldown expired (a success there makes it healthy again)
+    if (probation.length) return { routeID: probation[0]!.routeID, reason: "probation", top }
     // never leave the marker model in place: best route that is not permanently disabled, else anything
-    const fb = sorted.find((c) => c.health.ok || c.health.reason !== "disabled") ?? sorted[0]
+    const fb = sorted.find((c) => c.health.state !== "disabled") ?? sorted[0]
     if (!fb) throw new Error("no eligible routes")
     return { routeID: fb.routeID, reason: "fallback", top }
   }
@@ -43,7 +46,7 @@ export function selectRoute(cands: RouteScore[], state: SessionState, ctx: Selec
   const cur = state.routeID ? sorted.find((c) => c.routeID === state.routeID) : undefined
   if (cur) {
     const curViable = viable.includes(cur)
-    if (!curViable) return { routeID: best.routeID, reason: !cur.health.ok ? "failover" : "context", top }
+    if (!curViable) return { routeID: best.routeID, reason: cur.health.selectable !== true ? "failover" : "context", top }
     if (best.routeID === cur.routeID || best.r - cur.r < ctx.switchMargin) return { routeID: cur.routeID, reason: "sticky", top }
     const since = state.betterSince ?? ctx.now
     if (ctx.now - since >= ctx.switchHoldMs) return { routeID: best.routeID, reason: "switch-better", top }
@@ -52,7 +55,8 @@ export function selectRoute(cands: RouteScore[], state: SessionState, ctx: Selec
   // first turn: small exploration budget over routes with little live evidence that are not known to be weak
   if (ctx.rand() < ctx.explorationBudget) {
     const medianPEff = viable.map((c) => c.pEff).sort((a, b) => a - b)[Math.floor(viable.length / 2)] ?? 0
-    const pool = viable.filter((c) => c.samples < 10 && c.pEff >= medianPEff && c.routeID !== best.routeID)
+    // low-evidence routes that are not known to be weak, plus recovering routes (fresh evidence either way)
+    const pool = [...viable.filter((c) => c.samples < 10 && c.pEff >= medianPEff), ...probation].filter((c) => c.routeID !== best.routeID)
     if (pool.length) return { routeID: pool[Math.floor(ctx.rand() * pool.length)]!.routeID, reason: "explore", top }
   }
   return { routeID: best.routeID, reason: "best", top }

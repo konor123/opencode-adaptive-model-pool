@@ -1,7 +1,7 @@
 // Per-pool route scores R = (w_p·P_eff + w_l·L) × H (plan v1.3 §5.4–5.5), persisted in `scores`.
 import { globMatch, type OampOptions } from "../options.ts"
 import { type Db, kvGet, kvSet } from "../storage/db.ts"
-import { healthOf, type HealthVerdict, type Outcome } from "./health.ts"
+import { type HealthVerdict, loadHealth, verdict } from "./health.ts"
 import { availability, AVAILABILITY_FAILURES, DEFAULT_LATENCY_REFS, latencyScore, type LatencyRefs, percentile } from "./latency.ts"
 
 export interface RouteScore {
@@ -52,15 +52,22 @@ export function computeRouteScores(db: Db, opts: OampOptions, now = Date.now()):
     WHERE route_id = ? AND kind IN ('history','primary') AND outcome = 'ok' ORDER BY ts DESC LIMIT ${SAMPLE_LIMIT}`)
   const outcomesQ = db.query(`SELECT ts, outcome, error_class FROM request_metrics
     WHERE route_id = ? AND kind IN ('history','primary','aux') ORDER BY ts DESC LIMIT ${OUTCOME_LIMIT}`)
+  // dynamic concurrency (plan §7.3): >20% rate limits over the last 10 min (≥5 requests) → at most one auto session
+  const recent429 = db.query(`SELECT count(*) n, sum(error_class = 'rate_limit') rl FROM request_metrics
+    WHERE route_id = ? AND kind IN ('primary','aux') AND ts >= ?`)
+  const health = loadHealth(db)
 
   const base = routes.map((r) => {
     const samples = (samplesQ.all(r.route_id) as any[]).reverse().map((s) => ({ ts: s.ts, ttfaMs: s.ttfa_ms, e2eMs: s.e2e_ms, tps: s.tps }))
     const lat = latencyScore(samples, refs, opts.latency)
-    const recent = (outcomesQ.all(r.route_id) as any[]).map((o): Outcome => ({ ts: o.ts, outcome: o.outcome, errorClass: o.error_class }))
-    const counted = recent.filter((o) => o.outcome === "ok" || (o.outcome === "error" && AVAILABILITY_FAILURES.has(o.errorClass ?? "other")))
+    const recent = outcomesQ.all(r.route_id) as { ts: number; outcome: string; error_class: string | null }[]
+    const counted = recent.filter((o) => o.outcome === "ok" || (o.outcome === "error" && AVAILABILITY_FAILURES.has(o.error_class ?? "other")))
     const av = opts.weights.availabilityPenalty ? availability(counted.reverse().map((o) => ({ ok: o.outcome === "ok" }))) : { h: 1 }
     const limit = Object.entries(opts.routeLimits).find(([g]) => globMatch(g, r.route_id))?.[1]
-    return { r, lat, h: av.h, health: healthOf(recent, now), maxSessions: limit?.maxSessions }
+    const rl = recent429.get(r.route_id, now - 10 * 60_000) as { n: number; rl: number | null }
+    const throttled = rl.n >= 5 && (rl.rl ?? 0) / rl.n > 0.2
+    const maxSessions = throttled ? Math.min(limit?.maxSessions ?? 1, 1) : limit?.maxSessions
+    return { r, lat, h: av.h, health: verdict(health.get(r.route_id), now), maxSessions }
   })
 
   const out: RouteScore[] = []

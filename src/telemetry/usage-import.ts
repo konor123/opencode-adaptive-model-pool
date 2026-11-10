@@ -44,6 +44,17 @@ export function classifyToolError(tool: string, error: string): "schema" | "edit
   return "other"
 }
 
+/**
+ * A step counts as "ok" only if it actually produced something: a finish reason or output tokens.
+ * An aborted step (user stop, or OAMP in-turn failover) is completed without error, finish or output — that is
+ * not a success of the route and must not reset its health (found in the 2026-11-10 failover E2E test).
+ */
+export function stepOutcome(error: { name?: string } | undefined, finish: unknown, outTokens: number): "ok" | "error" | "aborted" {
+  if (error?.name === "MessageAbortedError") return "aborted"
+  if (error) return "error"
+  return (typeof finish === "string" && finish && finish !== "unknown") || outTokens > 0 ? "ok" : "aborted"
+}
+
 export function inBucket(inTokens: number): string {
   if (inTokens < 2000) return "0-2k"
   if (inTokens < 16000) return "2-16k"
@@ -125,9 +136,11 @@ export function importUsage(oampDb: Database, opencodeDbPath: string, opts: { si
         continue
       }
       const error = d.error
-      const outcome = error?.name === "MessageAbortedError" ? "aborted" : error ? "error" : "ok"
       const created = d.time?.created
       const completed = d.time?.completed
+      const outTokens = (d.tokens?.output ?? 0) + (d.tokens?.reasoning ?? 0)
+      // steps still running at import time stay "aborted" until a later (overlapping) import sees them completed
+      const outcome = stepOutcome(error, d.finish, outTokens)
       const e2e = outcome === "ok" && typeof created === "number" && typeof completed === "number" ? completed - created : null
       const out = (d.tokens?.output ?? 0) + (d.tokens?.reasoning ?? 0)
       const inTok = (d.tokens?.input ?? 0) + (d.tokens?.cache?.read ?? 0) + (d.tokens?.cache?.write ?? 0)

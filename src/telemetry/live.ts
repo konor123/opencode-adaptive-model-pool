@@ -2,7 +2,7 @@
 // E2E/tokens/errors = message.updated. Rows are upserted by hashed message id, merging with the opencode.db import.
 import type { Db } from "../storage/db.ts"
 import { sha256 } from "../selector/state.ts"
-import { classifyError, inBucket } from "./usage-import.ts"
+import { classifyError, inBucket, stepOutcome } from "./usage-import.ts"
 
 const AUX_AGENTS = new Set(["compaction", "summary", "title"])
 
@@ -25,6 +25,7 @@ export class LiveTelemetry {
   private lastRoute = new Map<string, string>() // sessionID → route of the latest assistant step
   /** called after a failure was recorded so selection can react on the next turn */
   onFailure?: (routeID: string, errorClass: string) => void
+  onSuccess?: (routeID: string) => void
   constructor(private db: Db, private now: () => number = Date.now) {}
 
   onHeaders(sessionID: string, agent: string) {
@@ -43,15 +44,21 @@ export class LiveTelemetry {
   }
 
   /** OpenCode retries the same model in-turn (Phase 0 E7); each retry is an availability failure of that route. */
+  /** called for every retry event (session, route, class) — used by in-turn failover */
+  onRetryEvent?: (sessionID: string, routeID: string, errorClass: string, attempt: number) => void
+  /** retry events of a step that OAMP aborted moments ago are dropped (not attributed to the new route) */
+  isStaleRetry?: (sessionID: string) => boolean
+
   private onRetry(sessionID: string, status: { attempt?: number; message?: string }) {
     const route = this.lastRoute.get(sessionID)
-    if (!route) return
+    if (!route || this.isStaleRetry?.(sessionID)) return
     const msg = String(status.message ?? "")
     const cls = /rate.?limit|429|too many|quota/i.test(msg) ? "rate_limit" : /timeout|timed out/i.test(msg) ? "timeout" : "server"
     this.db
       .query(`INSERT INTO request_metrics (ts, route_id, session_hash, kind, outcome, error_class, attempt_no) VALUES (?, ?, ?, 'primary', 'error', ?, ?)`)
       .run(this.now(), route, sha256(sessionID), cls, status.attempt ?? null)
     this.onFailure?.(route, cls)
+    this.onRetryEvent?.(sessionID, route, cls, status.attempt ?? 1)
   }
 
   private bind(messageID: string, sessionID: string): StepState {
@@ -89,13 +96,13 @@ export class LiveTelemetry {
     const tokens = m.tokens ?? {}
     const out = (tokens.output ?? 0) + (tokens.reasoning ?? 0)
     const inTok = (tokens.input ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0)
-    const outcome = m.error?.name === "MessageAbortedError" ? "aborted" : m.error ? "error" : "ok"
+    const outcome = stepOutcome(m.error, m.finish, out)
     const start = s.start ?? m.time?.created
     const e2e = outcome === "ok" && start && completed ? completed - start : null
     const ttft = s.ttft && start ? s.ttft - start : null
     const ttfa = s.ttfa && start ? s.ttfa - start : null
     const tps = e2e && out > 20 && s.ttft && completed > s.ttft ? out / ((completed - s.ttft) / 1000) : null
-    const kind = AUX_AGENTS.has(s.agent ?? m.agent ?? "") || m.summary ? "aux" : "primary"
+    const kind = process.env.OAMP_PROBE ? "probe" : AUX_AGENTS.has(s.agent ?? m.agent ?? "") || m.summary ? "aux" : "primary"
     this.db
       .query(`INSERT INTO request_metrics (ts, route_id, session_hash, msg_hash, kind, in_tokens, in_bucket, ttft_ms, ttfa_ms, e2e_ms, out_tokens, tps, outcome, error_class, finish)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -105,5 +112,6 @@ export class LiveTelemetry {
       .run(start ?? this.now(), `${m.providerID}/${m.modelID}`, sha256(m.sessionID), sha256(m.id), kind, inTok, inBucket(inTok),
         ttft, ttfa, e2e, out, tps, outcome, classifyError(m.error) ?? null, typeof m.finish === "string" ? m.finish : null)
     if (outcome === "error") this.onFailure?.(`${m.providerID}/${m.modelID}`, classifyError(m.error) ?? "other")
+    if (outcome === "ok") this.onSuccess?.(`${m.providerID}/${m.modelID}`)
   }
 }

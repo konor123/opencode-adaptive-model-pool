@@ -2,7 +2,7 @@
 
 An [OpenCode](https://opencode.ai) plugin that keeps a pool of models across providers and ranks them by public benchmarks and measured latency. When you pick the marker model `oamp/auto`, OAMP chooses the real model for each turn. Model calls always go through OpenCode itself, so OpenCode-only free models keep working.
 
-Status: **Phase 3**. Model selection via `oamp/auto` works: route scores R = (0.7·P_eff + 0.3·L) × H, live latency telemetry, sticky sessions, subagent inheritance, and cooldowns for failing routes. Phase 4 adds a full circuit breaker, probes and in-turn failover experiments. See `docs/plan-v1.3.md` and `docs/compatibility.md`.
+Status: **Phase 4**. Model selection via `oamp/auto` (route score R = (0.7·P_eff + 0.3·L) × H) comes with live latency telemetry, sticky sessions, subagent inheritance, a route health state machine (cooldown, circuit breaker, probation), and in-turn failover. In the TUI and `opencode serve`, a turn whose route starts failing is aborted and continued on the next healthy route. Under `opencode run` the in-turn switch is off, because `run` exits when its session is aborted. There the failed route is avoided from the next run on. See `docs/plan-v1.3.md` and `docs/compatibility.md`.
 
 ## What Phase 1 does
 
@@ -49,6 +49,8 @@ scripts/oamp bench [--force]   # fetch OpenRouter + Artificial Analysis benchmar
 scripts/oamp rank [pool]       # what the selector uses: R, P_eff, L, H, samples, health
 scripts/oamp perf              # performance only: P_eff with C/A/I breakdown and evidence
 scripts/oamp decisions         # recent selector decisions with reasons
+scripts/oamp health            # route health states (cooldown / open / disabled / probation)
+scripts/oamp probe <route>     # one tiny request through `opencode run`; updates health, deletes the probe session
 scripts/oamp model <route>     # full detail for one route
 ```
 

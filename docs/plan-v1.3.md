@@ -554,7 +554,7 @@ schema_version(v)
 | 1 | Discovery(**공급자 모델 갱신 포함, §4.1**)·Identity·Storage·Policy + opencode.db 부트스트랩 | 동적 Registry, `oamp status` | 5개 공급자 경로 등록, xkiro 모델이 OpenCode에 노출, 가격 상태·모달리티 필터 테스트 통과  ✅ 2026-11-10 완료: 경로 86개(eligible 57), xkiro 26개 노출, 이력 2,407건, 테스트 19개 통과, 전역 설치 |
 | 2 | Benchmark(OR·AA) + **자체 평가 최소 세트(앞당김)** + Performance Score | 경로별 P, c, 출처 이력 | 모든 활성 경로에 P_eff 산출, 출처 중복 없음  ✅ 2026-11-10 구현(아래 Phase 2 결과) |
 | 3 | 이벤트 관측 계측 + Latency Score + Selector(턴 단위 선택, sticky, 부모 상속) | `oamp/auto` 실사용, `oamp rank` | 실측 누적에 따라 순위가 바뀌고, 근소한 변동에는 바뀌지 않음  ✅ 2026-11-10 구현(아래 Phase 3 결과) |
-| 4 | Health·다음 턴 전환·Probe(OpenCode 경유)·동시성 한도 + (선택) 같은 요청 전환 | 장애 내성 선택자 | §13 장애 시나리오 테스트 통과 |
+| 4 | Health·다음 턴 전환·Probe(OpenCode 경유)·동시성 한도 + (선택) 같은 요청 전환 | 장애 내성 선택자 | §13 장애 시나리오 테스트 통과  ✅ 2026-11-10 구현(아래 Phase 4 결과) |
 | 5 | 전문 스냅샷 어댑터·가중치 상관 분석·패키징 | 배포 패키지, 운영 문서 | 설치·제거 시 기존 설정 무변경 |
 
 자체 평가 최소 세트(Phase 2)는 v1.0 §6.4의 1·3번(오류 수정 + 테스트 통과, 스키마 tool call)으로 시작한다. **실행은 `opencode run --model <경로>`로 OpenCode를 경유**한다. Zen 무료 모델도 평가할 수 있고, 실제 harness와도 같아진다. 경로당 과제 10개를 넘기지 않고 일일 실행 상한을 둔다.
@@ -592,6 +592,24 @@ schema_version(v)
   - 같은 세션 2턴째 `sticky`. task 하위 에이전트가 부모 auto를 상속(`sub-42`). 단계별 TTFT/TTFA/E2E 기록.
   - 1위 경로에 임시 429 기록을 넣자 새 세션이 `nvidia/deepseek-ai/deepseek-v4.1-flash`로 회피(임시 기록은 삭제).
   - 그 NVIDIA 경로가 실제로 96초 무응답 뒤 `Internal server error` → OpenCode가 같은 모델로 재시도하는 동안 턴이 길어졌다. → 재시도 이벤트 기록을 추가했다. **같은 턴 안의 전환은 Phase 4 E12(재시도 감지 → abort → 다른 경로로 continue) 실험 대상.**
+
+### Phase 4 결과 (2026-11-10)
+
+- **Health 상태기계**(`health_states`, 모든 프로세스 공유):
+  - 일시 오류 → `cooldown` 60→120→240→300초. 연속 3회째 → `open` 120초(다시 열릴 때마다 2배, 최대 30분).
+  - 401/403/404 → `disabled` 24시간(401은 같은 공급자 전체).
+  - 기간이 끝나면 `probation`. 건강한 후보가 없을 때나 첫 턴 탐색에서만 쓴다. 성공하면 `healthy`, 실패하면 더 긴 `open`.
+  - 사용자 중단·context_overflow는 Health 신호로 쓰지 않는다.
+- **E12 같은 턴 내 전환 — 실현됨**:
+  - 흐름: auto 루트 세션에서 OpenCode 재시도(`session.status retry`)를 감지 → 실패를 기록 → 다음 경로를 고르고 세션 상태를 먼저 갱신 → `session.abort` → 다음 경로 모델로 synthetic "[OAMP] … Continue" 프롬프트(`promptAsync`).
+  - 한 턴에 최대 2회 전환한다. 하위 에이전트 세션은 제외한다(부모의 task 호출을 실패시키므로).
+  - 실측(`opencode serve`, 항상 실패하는 테스트 경로): 8.1초 만에 다른 경로가 정답. 전환 기능이 없을 때는 약 65초 재시도 뒤 오류.
+  - E2E에서 찾아 고친 버그 2건: ① abort된 단계(finish·출력 없이 완료)를 성공으로 쳐서 실패 경로의 Health가 회복됨 → `stepOutcome` 규칙. ② abort된 단계의 늦은 재시도 이벤트가 새 경로 실패로 귀속됨 → 전환 후 5초 무시.
+  - **`opencode run`(CLI)에서는 끈다**: run은 세션이 abort되면 continue를 기다리지 않고 답 없이 종료 코드 0으로 끝난다(실측). 그래서 run에서는 OpenCode 재시도에 맡기고, 실패한 경로는 다음 턴·다음 실행에서 피한다(실측: 다음 run이 다른 경로로 정답). `process.argv[2] === "run"`으로 판별한다. `run --attach`는 서버 쪽에서 판별할 수 없으므로 한계로 남긴다.
+- **동시성 자동 제한**: 최근 10분 429 비율이 20%를 넘으면(5건 이상) 그 경로는 auto 세션 1개로 제한.
+- **Probe**: `oamp probe <route>`는 `opencode run`으로 최소 요청 1회를 보낸다(OpenCode 고유 경로). 계측은 `probe`로 분류하고 세션은 삭제한다. 실사용 기록 우선 결정에 따라 자동 Probe는 두지 않는다. 회복은 실제 요청(probation 선택)으로 확인한다.
+- **전 경로 실패**: 전환 예산(2회)을 넘으면 OpenCode 재시도에 맡기고 오류로 끝낸다. OAMP는 요청을 다시 보내지 않으므로 도구 중복 실행이 생기지 않는다. continue 프롬프트는 이미 실행된 도구 결과가 들어 있는 기록에서 이어간다.
+- 운영: `OAMP_OPTIONS` 환경변수로 옵션을 덮어쓸 수 있다(격리 DB 테스트 등). CLI `health`, `probe`.
 
 ## 13. 검증 기준 (v1.0 §13 + 추가)
 

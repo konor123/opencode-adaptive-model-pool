@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { resolveOptions } from "../src/options.ts"
-import { healthOf } from "../src/scoring/health.ts"
+import { recordOutcome, transition, verdict } from "../src/scoring/health.ts"
 import { availability, DEFAULT_LATENCY_REFS, latencyScore, scoreHigherBetter, scoreLowerBetter } from "../src/scoring/latency.ts"
 import type { RouteScore } from "../src/scoring/routes.ts"
 import { Selector } from "../src/selector/hook.ts"
@@ -33,20 +33,43 @@ test("availability H: failures pull it down, floor at 0.25, few samples blend wi
   expect(flaky.h).toBeLessThan(0.6)
 })
 
-test("health: transient errors cool down exponentially, permanent ones disable for a day", () => {
+test("health state machine: cooldown → open → probation → healthy, permanent errors disable", () => {
   const now = 1_000_000_000
-  expect(healthOf([], now)).toEqual({ ok: true })
-  expect(healthOf([{ ts: now - 10_000, outcome: "error", errorClass: "rate_limit" }], now)).toMatchObject({ ok: false, reason: "cooldown" })
-  expect(healthOf([{ ts: now - 61_000, outcome: "error", errorClass: "rate_limit" }], now)).toEqual({ ok: true })
-  const three = [0, 1, 2].map((i) => ({ ts: now - 100_000 - i, outcome: "error" as const, errorClass: "server" }))
-  expect(healthOf(three, now)).toMatchObject({ ok: false, reason: "cooldown" }) // 240 s window
-  expect(healthOf([{ ts: now - 3_600_000, outcome: "error", errorClass: "forbidden" }], now)).toMatchObject({ ok: false, reason: "disabled" })
-  expect(healthOf([{ ts: now - 5000, outcome: "aborted" }, { ts: now - 6000, outcome: "ok" }], now)).toEqual({ ok: true })
+  let h = transition(undefined, "r", "rate_limit", now)
+  expect(h).toMatchObject({ state: "cooldown", consecutiveFail: 1, until: now + 60_000 })
+  expect(verdict(h, now + 1000).selectable).toBe(false)
+  expect(verdict(h, now + 60_000)).toMatchObject({ state: "probation", selectable: "probation" })
+  h = transition(h, "r", "server", now + 1000)
+  expect(h).toMatchObject({ state: "cooldown", consecutiveFail: 2, until: now + 1000 + 120_000 })
+  h = transition(h, "r", "timeout", now + 2000)
+  expect(h).toMatchObject({ state: "open", opens: 1, until: now + 2000 + 120_000 })
+  // expired → probation; failure in probation re-opens for twice as long
+  h = transition(h, "r", "server", now + 200_000)
+  expect(h).toMatchObject({ state: "open", opens: 2, until: now + 200_000 + 240_000 })
+  // success in probation → healthy
+  h = transition(h, "r", undefined, now + 500_000)
+  expect(h).toMatchObject({ state: "healthy", consecutiveFail: 0 })
+  expect(verdict(h, now + 500_001)).toEqual({ state: "healthy", selectable: true })
+  // aborts and context overflows are not health signals
+  expect(transition(h, "r", "aborted", now)).toMatchObject({ state: "healthy" })
+  expect(transition(h, "r", "context_overflow", now)).toMatchObject({ state: "healthy" })
+  const d = transition(undefined, "r", "forbidden", now)
+  expect(d).toMatchObject({ state: "disabled", until: now + 24 * 3_600_000 })
+})
+
+test("401 disables every route of the provider", () => {
+  const db = openDb(":memory:")
+  const ins = db.query(`INSERT INTO routes (route_id, provider_id, model_id, canonical_id, match_conf, source, price_state, eligible, status, first_seen, last_seen, updated_at)
+    VALUES (?, ?, ?, ?, 1, 'config', 'free_verified', 1, 'active', 0, 0, 0)`)
+  ins.run("p/a", "p", "a", "a"); ins.run("p/b", "p", "b", "b"); ins.run("q/c", "q", "c", "c")
+  recordOutcome(db, "p/a", "auth", 1000)
+  const st = Object.fromEntries((db.query("SELECT route_id, state FROM health_states").all() as any[]).map((r) => [r.route_id, r.state]))
+  expect(st).toEqual({ "p/a": "disabled", "p/b": "disabled" })
 })
 
 const rs = (routeID: string, r: number, extra: Partial<RouteScore> = {}): RouteScore => ({
   routeID, providerID: routeID.split("/")[0]!, modelID: routeID.split("/").slice(1).join("/"), pool: "auto",
-  pEff: r, l: 50, h: 1, r, samples: 50, health: { ok: true }, ...extra,
+  pEff: r, l: 50, h: 1, r, samples: 50, health: { state: "healthy", selectable: true }, ...extra,
 })
 const ctx = (over: Partial<Parameters<typeof selectRoute>[2]> = {}) => ({
   now: 10_000_000, activeSessions: () => 0, switchMargin: 5, switchHoldMs: 30 * 60_000, explorationBudget: 0, rand: () => 0.99, ...over,
@@ -62,7 +85,7 @@ test("selection: best first, sticky, hold before switching, failover, context, l
   expect(pend).toMatchObject({ routeID: "b/y", reason: "sticky-pending", betterSince: 10_000_000 })
   expect(selectRoute(c, { pool: "auto", routeID: "b/y", betterSince: 10_000_000 - 31 * 60_000, turns: 4 }, ctx())).toMatchObject({ routeID: "a/x", reason: "switch-better" })
   // current route unhealthy → failover
-  const sick = [rs("a/x", 70), rs("b/y", 60, { health: { ok: false, reason: "cooldown", until: 0 } })]
+  const sick = [rs("a/x", 70), rs("b/y", 60, { health: { state: "cooldown", selectable: false, until: 0 } })]
   expect(selectRoute(sick, { pool: "auto", routeID: "b/y", turns: 3 }, ctx())).toMatchObject({ routeID: "a/x", reason: "failover" })
   // context too large for current route
   const small = [rs("a/x", 70), rs("b/y", 80, { ctxLimit: 32000 })]
@@ -72,8 +95,14 @@ test("selection: best first, sticky, hold before switching, failover, context, l
   expect(selectRoute(lim, { pool: "auto", turns: 0 }, ctx({ activeSessions: () => 1 }))).toMatchObject({ routeID: "b/y" })
   expect(selectRoute(lim, { pool: "auto", routeID: "ex/one", turns: 2 }, ctx({ activeSessions: () => 1 }))).toMatchObject({ routeID: "ex/one" })
   // nothing viable → never keep the marker
-  const dead = [rs("a/x", 70, { health: { ok: false, reason: "cooldown", until: 0 } })]
+  const dead = [rs("a/x", 70, { health: { state: "cooldown", selectable: false, until: 0 } })]
   expect(selectRoute(dead, { pool: "auto", turns: 0 }, ctx())).toMatchObject({ routeID: "a/x", reason: "fallback" })
+  // a recovering (probation) route is used before falling back
+  const rec = [rs("a/x", 70, { health: { state: "open", selectable: false } }), rs("b/y", 40, { health: { state: "probation", selectable: "probation" } })]
+  expect(selectRoute(rec, { pool: "auto", turns: 0 }, ctx())).toMatchObject({ routeID: "b/y", reason: "probation" })
+  // but never while a healthy route fits
+  const both = [rs("a/x", 50), rs("b/y", 90, { health: { state: "probation", selectable: "probation" } })]
+  expect(selectRoute(both, { pool: "auto", turns: 0 }, ctx())).toMatchObject({ routeID: "a/x", reason: "best" })
 })
 
 test("exploration only picks low-sample routes that are not known to be weak", () => {
@@ -131,7 +160,7 @@ test("selector hook: a recorded rate limit moves the session to another route on
   const o1 = mk()
   await sel.onChatMessage({ sessionID: "s", model: { providerID: "oamp", modelID: "auto" } }, o1)
   expect(o1.message.model.modelID).toBe("good-free")
-  db.query("INSERT INTO request_metrics (ts, route_id, kind, outcome, error_class) VALUES (?, 'opencode/good-free', 'primary', 'error', 'rate_limit')").run(now)
+  recordOutcome(db, "opencode/good-free", "rate_limit", now)
   sel.invalidate()
   now += 5000
   const o2 = mk()
@@ -181,4 +210,34 @@ test("live telemetry records OpenCode retries as failures of the session's curre
     { route_id: "nvidia/a/b", outcome: "error", error_class: "rate_limit", attempt_no: 2 },
   ])
   expect(seen).toEqual(["nvidia/a/b:server", "nvidia/a/b:rate_limit"])
+})
+
+test("an aborted step without finish or output is not a success", () => {
+  const { stepOutcome } = require("../src/telemetry/usage-import.ts")
+  expect(stepOutcome(undefined, "stop", 0)).toBe("ok")
+  expect(stepOutcome(undefined, undefined, 12)).toBe("ok")
+  expect(stepOutcome(undefined, undefined, 0)).toBe("aborted")
+  expect(stepOutcome(undefined, "unknown", 0)).toBe("aborted")
+  expect(stepOutcome({ name: "MessageAbortedError" }, "stop", 5)).toBe("aborted")
+  expect(stepOutcome({ name: "APIError" }, undefined, 0)).toBe("error")
+  const db = openDb(":memory:")
+  const lt = new LiveTelemetry(db, () => 1)
+  let ok = 0
+  lt.onSuccess = () => ok++
+  lt.onEvent({ type: "message.updated", properties: { info: { id: "m", sessionID: "s", role: "assistant", providerID: "d", modelID: "x", time: { created: 1, completed: 2 }, tokens: { output: 0 } } } })
+  expect(ok).toBe(0)
+  expect((db.query("SELECT outcome FROM request_metrics").get() as any).outcome).toBe("aborted")
+})
+
+test("retry events right after an OAMP switch are not attributed to the new route", () => {
+  const db = openDb(":memory:")
+  const lt = new LiveTelemetry(db, () => 1)
+  let quiet = true
+  lt.isStaleRetry = () => quiet
+  lt.onEvent({ type: "message.updated", properties: { info: { id: "m1", sessionID: "s", role: "assistant", providerID: "new", modelID: "r", time: { created: 1 } } } })
+  lt.onEvent({ type: "session.status", properties: { sessionID: "s", status: { type: "retry", attempt: 3, message: "ECONNREFUSED" } } })
+  expect((db.query("SELECT count(*) n FROM request_metrics").get() as any).n).toBe(0)
+  quiet = false
+  lt.onEvent({ type: "session.status", properties: { sessionID: "s", status: { type: "retry", attempt: 1, message: "Internal" } } })
+  expect((db.query("SELECT route_id FROM request_metrics").get() as any).route_id).toBe("new/r")
 })

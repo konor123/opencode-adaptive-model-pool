@@ -8,6 +8,8 @@ import { resolveOptions } from "./options.ts"
 import { type Db, kvGet, kvSet, openDb } from "./storage/db.ts"
 import { refreshBenchmarks } from "./benchmarks/refresh.ts"
 import { computePerformanceScores } from "./scoring/compute.ts"
+import { recordOutcome } from "./scoring/health.ts"
+import { InTurnFailover } from "./selector/failover.ts"
 import { MARKER_PROVIDER, Selector } from "./selector/hook.ts"
 import { LiveTelemetry } from "./telemetry/live.ts"
 import { importUsage, OVERLAP_MS } from "./telemetry/usage-import.ts"
@@ -47,9 +49,27 @@ export const OampPlugin = async (input: any, rawOptions?: unknown) => {
       return r?.data?.parentID ?? undefined
     },
   })
+  // `opencode run` exits as soon as its session is aborted, so an in-turn switch would end the run with no answer
+  // (verified 2026-11-10). There, leave retries to OpenCode and switch on the next turn instead.
+  const command = process.argv[2]
+  const failover = new InTurnFailover({ db, opts, selector, client: command === "run" ? undefined : input?.client })
+  log("info", "plugin init", { command: command ?? "tui", inTurnFailover: opts.selector.inTurnFailover && command !== "run" })
   telemetry.onFailure = (route, cls) => {
+    recordOutcome(db, route, cls)
     selector.invalidate()
     log("warn", "route failure recorded", { route, errorClass: cls })
+  }
+  telemetry.onSuccess = (route) => {
+    // only touch the health table when the route is not already plainly healthy
+    const row = db.query("SELECT state, consecutive_fail FROM health_states WHERE route_id = ?").get(route) as { state: string; consecutive_fail: number } | null
+    if (row && (row.state !== "healthy" || row.consecutive_fail > 0)) {
+      recordOutcome(db, route, undefined)
+      selector.invalidate()
+    }
+  }
+  telemetry.isStaleRetry = (sessionID) => failover.isQuiet(sessionID)
+  telemetry.onRetryEvent = (sessionID, route, cls, attempt) => {
+    failover.onRetry(sessionID, route, cls, attempt).catch((e) => log("error", "failover failed", { error: String(e) }))
   }
   const safe = (name: string, f: () => unknown) => {
     try {
@@ -61,7 +81,11 @@ export const OampPlugin = async (input: any, rawOptions?: unknown) => {
   }
 
   return {
-    "chat.message": async (inp: any, out: any) => safe("chat.message", () => selector.onChatMessage(inp, out)),
+    "chat.message": async (inp: any, out: any) =>
+      safe("chat.message", async () => {
+        failover.noteTurn(inp.sessionID, inp.agent, out?.parts)
+        await selector.onChatMessage(inp, out)
+      }),
     "chat.headers": async (inp: any) => safe("chat.headers", () => telemetry.onHeaders(inp.sessionID, inp.agent)),
     event: async ({ event }: any) =>
       safe("event", () => {

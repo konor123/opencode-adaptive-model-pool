@@ -1,6 +1,6 @@
 // oamp CLI: deterministic inspection without going through an LLM (plan v1.3 §9).
 //   oamp status | routes [--all] [--provider p] | refresh [--force] | usage [--full] | bench [--force]
-//   | rank [pool] | perf | decisions [--limit n] | model <route>
+//   | rank [pool] | perf | decisions [--limit n] | model <route> | health | probe <route>
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -12,6 +12,8 @@ import { kvGet, kvSet, openDb } from "../storage/db.ts"
 import { refreshBenchmarks } from "../benchmarks/refresh.ts"
 import { computePerformanceScores } from "../scoring/compute.ts"
 import { computeRouteScores } from "../scoring/routes.ts"
+import { probeRoute } from "../health/probe.ts"
+import { loadHealth, recordOutcome, verdict } from "../scoring/health.ts"
 import { importUsage } from "../telemetry/usage-import.ts"
 
 /** Strip // and /* *\/ comments outside strings, and trailing commas. */
@@ -86,7 +88,7 @@ async function main(argv: string[]) {
     console.log(`pool ${pool}`)
     console.log(`${pad("#", 3)} ${pad("route", 52)} ${pad("R", 6)} ${pad("P_eff", 6)} ${pad("L", 6)} ${pad("H", 5)} ${pad("n", 5)} health`)
     scores.forEach((s, i) =>
-      console.log(`${pad(i + 1, 3)} ${pad(s.routeID, 52)} ${pad(s.r.toFixed(1), 6)} ${pad(s.pEff.toFixed(1), 6)} ${pad(s.l.toFixed(1), 6)} ${pad(s.h.toFixed(2), 5)} ${pad(s.samples, 5)} ${s.health.ok ? "ok" : `${s.health.reason} until ${new Date(s.health.until).toISOString()}`}`))
+      console.log(`${pad(i + 1, 3)} ${pad(s.routeID, 52)} ${pad(s.r.toFixed(1), 6)} ${pad(s.pEff.toFixed(1), 6)} ${pad(s.l.toFixed(1), 6)} ${pad(s.h.toFixed(2), 5)} ${pad(s.samples, 5)} ${s.health.state}${s.health.until ? ` until ${new Date(s.health.until).toISOString()}` : ""}`))
     console.log(`${scores.length} eligible routes. Benchmark data: Artificial Analysis (artificialanalysis.ai), OpenRouter (openrouter.ai).`)
     return
   }
@@ -99,6 +101,24 @@ async function main(argv: string[]) {
       const cat = d.categories ? `${d.categories.C.score.toFixed(0)}${d.categories.C.proxy ? "*" : ""}/${d.categories.A.score.toFixed(0)}/${d.categories.I.score.toFixed(0)}` : ""
       console.log(`${pad(i + 1, 3)} ${pad(r.route_id, 56)} ${pad((r.p_eff ?? 0).toFixed(1), 6)} ${pad((r.p ?? 0).toFixed(1), 6)} ${pad((r.c ?? 0).toFixed(2), 5)} ${pad(cat, 17)} ${(d.used ?? []).join(",")}`)
     })
+    return
+  }
+  if (cmd === "health") {
+    const now = Date.now()
+    const rows = [...loadHealth(db).values()].sort((a, b) => (b.lastErrorAt ?? 0) - (a.lastErrorAt ?? 0))
+    for (const h of rows) {
+      const v = verdict(h, now)
+      console.log(`${pad(h.routeID, 52)} ${pad(v.state, 10)} fails=${pad(h.consecutiveFail, 3)} opens=${pad(h.opens, 2)} ${pad(h.errorClass ?? "", 11)} ${v.until ? "until " + new Date(v.until).toISOString() : ""}`)
+    }
+    console.log(`${rows.length} routes with health history (others are healthy)`)
+    return
+  }
+  if (cmd === "probe") {
+    const route = rest[0]
+    if (!route || !db.query("SELECT 1 FROM routes WHERE route_id = ?").get(route)) { console.log("usage: oamp probe <known route id>"); return }
+    const r = await probeRoute(route)
+    const h = recordOutcome(db, route, r.ok ? undefined : r.error === "timeout" ? "timeout" : "server")
+    console.log(JSON.stringify({ route, ...r, health: verdict(h, Date.now()) }))
     return
   }
   if (cmd === "decisions") {
