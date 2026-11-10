@@ -551,7 +551,7 @@ schema_version(v)
 | Phase | 내용 | 산출물 | 완료 기준 |
 |---|---|---|---|
 | 0 | §11 실험 | compatibility.md, PoC(`poc/phase0/`) | ✅ 완료(2026-11-10). E3 Go |
-| 1 | Discovery(**공급자 모델 갱신 포함, §4.1**)·Identity·Storage·Policy + opencode.db 부트스트랩 | 동적 Registry, `oamp status` | 5개 공급자 경로 등록, xkiro 모델이 OpenCode에 노출, 가격 상태·모달리티 필터 테스트 통과 |
+| 1 | Discovery(**공급자 모델 갱신 포함, §4.1**)·Identity·Storage·Policy + opencode.db 부트스트랩 | 동적 Registry, `oamp status` | 5개 공급자 경로 등록, xkiro 모델이 OpenCode에 노출, 가격 상태·모달리티 필터 테스트 통과  ✅ 2026-11-10 완료: 경로 86개(eligible 57), xkiro 26개 노출, 이력 2,407건, 테스트 19개 통과, 전역 설치 |
 | 2 | Benchmark(OR·AA) + **자체 평가 최소 세트(앞당김)** + Performance Score | 경로별 P, c, 출처 이력 | 모든 활성 경로에 P_eff 산출, 출처 중복 없음 |
 | 3 | 이벤트 관측 계측 + Latency Score + Selector(턴 단위 선택, sticky, 부모 상속) | `oamp/auto` 실사용, `oamp rank` | 실측 누적에 따라 순위가 바뀌고, 근소한 변동에는 바뀌지 않음 |
 | 4 | Health·다음 턴 전환·Probe(OpenCode 경유)·동시성 한도 + (선택) 같은 요청 전환 | 장애 내성 선택자 | §13 장애 시나리오 테스트 통과 |
