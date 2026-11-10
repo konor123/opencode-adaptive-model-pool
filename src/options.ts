@@ -19,7 +19,11 @@ export interface OampOptions {
     quotaProviders: string[]
   }
   providerSync: Record<string, ProviderSyncSpec>
-  refresh: { providerModelsHours: number; catalogHours: number }
+  weights: { performance: number; latency: number; coding: number; agentic: number; reasoning: number; availabilityPenalty: boolean }
+  /** where P_eff shrinks to without evidence: "pool-median" (median P of evidenced eligible routes) or a fixed number */
+  scoring: { prior: "pool-median" | number }
+  benchmarks: { openrouter: { enabled: boolean }; artificialAnalysis: { enabled: boolean; keyFile: string } }
+  refresh: { providerModelsHours: number; catalogHours: number; benchmarkHours: number }
   storage: { path: string }
   paths: { modelsDevCache: string; opencodeDb: string; opencodeAuth: string }
 }
@@ -38,7 +42,13 @@ export const DEFAULT_OPTIONS: OampOptions = {
     quotaProviders: ["nvidia"],
   },
   providerSync: { xkiro: { filter: "free-chat" }, exaone: { filter: "all" } },
-  refresh: { providerModelsHours: 6, catalogHours: 6 },
+  weights: { performance: 0.7, latency: 0.3, coding: 0.55, agentic: 0.3, reasoning: 0.15, availabilityPenalty: true },
+  scoring: { prior: "pool-median" },
+  benchmarks: {
+    openrouter: { enabled: true },
+    artificialAnalysis: { enabled: true, keyFile: join(HOME, ".config/oamp/aa-api-key") },
+  },
+  refresh: { providerModelsHours: 6, catalogHours: 6, benchmarkHours: 24 },
   storage: { path: join(HOME, ".local/share/oamp/oamp.db") },
   paths: {
     modelsDevCache: join(HOME, ".cache/opencode/models.json"),
@@ -70,6 +80,7 @@ const expandHome = (p: string) => (p.startsWith("~/") ? join(HOME, p.slice(2)) :
 export function resolveOptions(raw?: unknown): OampOptions {
   const o = merge(DEFAULT_OPTIONS, raw ?? {})
   o.storage.path = expandHome(o.storage.path)
+  o.benchmarks.artificialAnalysis.keyFile = expandHome(o.benchmarks.artificialAnalysis.keyFile)
   for (const k of Object.keys(o.paths) as (keyof OampOptions["paths"])[]) o.paths[k] = expandHome(o.paths[k])
   return o
 }

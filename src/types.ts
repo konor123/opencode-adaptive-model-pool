@@ -16,6 +16,8 @@ export interface CatalogModel {
   name?: string
   /** models.dev canonical_model_id when available. */
   canonicalID?: string
+  /** confidence of canonicalID when it was inferred via an alias (default 1.0 = provider's own models.dev entry) */
+  canonicalConf?: number
   family?: string
   /** undefined = no price information at all. */
   cost?: Cost

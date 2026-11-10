@@ -552,7 +552,7 @@ schema_version(v)
 |---|---|---|---|
 | 0 | §11 실험 | compatibility.md, PoC(`poc/phase0/`) | ✅ 완료(2026-11-10). E3 Go |
 | 1 | Discovery(**공급자 모델 갱신 포함, §4.1**)·Identity·Storage·Policy + opencode.db 부트스트랩 | 동적 Registry, `oamp status` | 5개 공급자 경로 등록, xkiro 모델이 OpenCode에 노출, 가격 상태·모달리티 필터 테스트 통과  ✅ 2026-11-10 완료: 경로 86개(eligible 57), xkiro 26개 노출, 이력 2,407건, 테스트 19개 통과, 전역 설치 |
-| 2 | Benchmark(OR·AA) + **자체 평가 최소 세트(앞당김)** + Performance Score | 경로별 P, c, 출처 이력 | 모든 활성 경로에 P_eff 산출, 출처 중복 없음 |
+| 2 | Benchmark(OR·AA) + **자체 평가 최소 세트(앞당김)** + Performance Score | 경로별 P, c, 출처 이력 | 모든 활성 경로에 P_eff 산출, 출처 중복 없음  ✅ 2026-11-10 구현(아래 Phase 2 결과) |
 | 3 | 이벤트 관측 계측 + Latency Score + Selector(턴 단위 선택, sticky, 부모 상속) | `oamp/auto` 실사용, `oamp rank` | 실측 누적에 따라 순위가 바뀌고, 근소한 변동에는 바뀌지 않음 |
 | 4 | Health·다음 턴 전환·Probe(OpenCode 경유)·동시성 한도 + (선택) 같은 요청 전환 | 장애 내성 선택자 | §13 장애 시나리오 테스트 통과 |
 | 5 | 전문 스냅샷 어댑터·가중치 상관 분석·패키징 | 배포 패키지, 운영 문서 | 설치·제거 시 기존 설정 무변경 |
@@ -560,6 +560,16 @@ schema_version(v)
 자체 평가 최소 세트(Phase 2)는 v1.0 §6.4의 1·3번(오류 수정 + 테스트 통과, 스키마 tool call)으로 시작한다. **실행은 `opencode run --model <경로>`로 OpenCode를 경유**한다. Zen 무료 모델도 평가할 수 있고, 실제 harness와도 같아진다. 경로당 과제 10개를 넘기지 않고 일일 실행 상한을 둔다.
 
 ---
+
+### Phase 2 결과 (2026-11-10)
+
+- 수집: OpenRouter Benchmarks 601건(AA 재배포 intelligence·coding·agentic + OR `gpqa_diamond`·`tau_bench_airline`), AA 무료 API 1,662건(intelligence + 모델 단위 속도 사전값 `speed_*`). AA는 수집 1회에 4요청이며 남은 한도를 `bench-sync:aa`에 기록한다.
+- 같은 AA 측정이 두 경로로 오면 OpenRouter 사본 하나만 쓴다(`via` 우선순위). 기준 범위는 (출처, 경로, 지표, 버전)별 p5/p95로 처음 한 번 고정한다(`kv ref:*`).
+- 식별자 연결: OR permaslug는 끝의 날짜(`-YYYYMMDD`)를 떼고 models.dev openrouter 항목과 대응(신뢰도 1.0, 없으면 0.8). AA slug는 canonical 모델 부분의 `.`·`_`를 `-`로 바꿔 유일하게 일치할 때만 대응(0.8). 💡 **교차 공급자 별칭 색인**: 자기 models.dev 항목이 없는 경로(xkiro 등)도 다른 공급자의 같은 `org/model` 항목에서 canonical ID를 가져온다(0.9).
+- 💡 **사전값 변경(계획 §5.2 대비)**: 근거가 없을 때 수렴하는 값을 50 고정 대신 **같은 풀에서 근거 있는 eligible 경로의 P 중앙값**(실측 45.6)으로 한다. 정규화 기준이 유료 최상위 모델을 포함한 전체 분포여서, 50은 무료 미평가 모델에 지나치게 낙관적이었다. 설정 `scoring.prior`로 50 고정을 선택할 수 있다.
+- 자체 평가: 과제 4개(코딩 2: 버그 수정, 다중 파일 이름 변경 / 도구 2: JSON 정확 작성, 읽고 쓰기). 결정적 검증기를 쓰고 `opencode run`으로 실행한다(Zen 무료 모델도 원래 경로로 호출됨). OpenCode 자체가 실패한 실행(0이 아닌 종료 코드)은 채점하지 않는다. 시간 초과는 실패로 친다. 하루 80회 상한. 결과는 canonical 단위 `selfeval_coding`/`selfeval_tools`(0–100)로 저장한다. 평가 세션은 OpenCode 세션 목록에 `oamp-selfeval …` 제목으로 남는다.
+- 첫 결과: exaone `k-exaone_v2.5`가 4/4 통과(코딩 100, 도구 100). 현재 과제는 쉬워서 변별력이 낮을 수 있다 → 과제 확장은 Phase 5.
+- 위임 기록: AA 수집기를 맡은 OpenCode worker(task_07f43cbbfe81)가 범위 밖 파일을 삭제해 중지시켰다(커밋된 `canonical.ts` 포함). Coordinator가 복원하고 직접 구현했다. 이후 위임은 **격리 worktree(`--worktree new-child`)**로만 한다.
 
 ## 13. 검증 기준 (v1.0 §13 + 추가)
 

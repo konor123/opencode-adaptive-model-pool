@@ -8,6 +8,9 @@ import { loadModelsDev } from "../discovery/models-dev.ts"
 import { initLog } from "../log.ts"
 import { resolveOptions } from "../options.ts"
 import { kvGet, kvSet, openDb } from "../storage/db.ts"
+import { refreshBenchmarks } from "../benchmarks/refresh.ts"
+import { computePerformanceScores } from "../scoring/compute.ts"
+import { selfEvaluate } from "../selfeval/evaluate.ts"
 import { bootstrapFromOpencodeDb } from "../telemetry/bootstrap.ts"
 
 /** Strip // and /* *\/ comments outside strings, and trailing commas. */
@@ -69,6 +72,52 @@ async function main(argv: string[]) {
     console.log(JSON.stringify({ providers: r, inject: s.inject, sync: s.sync, routes: s.routes, eligible: s.eligible }, null, 2))
     return
   }
+  if (cmd === "bench") {
+    const b = await refreshBenchmarks(db, opts, cfg, { force: flag("--force"), holder: `cli:${process.pid}` })
+    const s = computePerformanceScores(db, opts, loadModelsDev(opts.paths.modelsDevCache)?.openrouter?.models)
+    console.log(JSON.stringify({ benchmarks: b, scored: s.length, withEvidence: s.filter((x) => x.result.used.length).length }, null, 2))
+    return
+  }
+  if (cmd === "selfeval") {
+    // oamp selfeval [--route r]... [--missing N]   (--missing: N eligible routes with the lowest confidence)
+    const routes: string[] = []
+    rest.forEach((a, i) => a === "--route" && rest[i + 1] && routes.push(rest[i + 1]!))
+    const missing = Number(arg("--missing") ?? 0)
+    if (missing > 0) {
+      const rows = db.query(`SELECT r.route_id FROM routes r LEFT JOIN scores s ON s.route_id = r.route_id AND s.pool = 'auto'
+        WHERE r.status = 'active' AND r.eligible = 1 ORDER BY COALESCE(s.c, 0) ASC, r.route_id LIMIT ?`).all(missing) as any[]
+      routes.push(...rows.map((r) => r.route_id))
+    }
+    const reps = await selfEvaluate(db, routes)
+    for (const r of reps) console.log(JSON.stringify(r))
+    const s = computePerformanceScores(db, opts, loadModelsDev(opts.paths.modelsDevCache)?.openrouter?.models)
+    console.log(`rescored ${s.length} routes`)
+    return
+  }
+  if (cmd === "rank") {
+    const all = flag("--all")
+    const rows = db.query(`SELECT r.route_id, r.price_state, r.eligible, s.p, s.p_eff, s.c, s.detail_json FROM routes r
+      JOIN scores s ON s.route_id = r.route_id AND s.pool = 'auto'
+      WHERE r.status = 'active' ${all ? "" : "AND r.eligible = 1"} ORDER BY s.p_eff DESC`).all() as any[]
+    console.log(`${pad("#", 3)} ${pad("route", 56)} ${pad("P_eff", 6)} ${pad("P", 6)} ${pad("c", 5)} ${pad("C/A/I", 17)} evidence`)
+    rows.forEach((r, i) => {
+      const d = JSON.parse(r.detail_json ?? "{}")
+      const cat = d.categories ? `${d.categories.C.score.toFixed(0)}${d.categories.C.proxy ? "*" : ""}/${d.categories.A.score.toFixed(0)}/${d.categories.I.score.toFixed(0)}` : ""
+      console.log(`${pad(i + 1, 3)} ${pad(r.route_id, 56)} ${pad(r.p_eff.toFixed(1), 6)} ${pad(r.p.toFixed(1), 6)} ${pad(r.c.toFixed(2), 5)} ${pad(cat, 17)} ${(d.used ?? []).join(",")}`)
+    })
+    console.log(`${rows.length} routes (P_eff = c·P + (1−c)·50; * = coding proxied from reasoning). Latency L and H arrive in Phase 3.`)
+    console.log("Benchmark data: Artificial Analysis (artificialanalysis.ai), OpenRouter (openrouter.ai).")
+    return
+  }
+  if (cmd === "model") {
+    const id = rest[0]
+    const r = db.query("SELECT * FROM routes WHERE route_id = ?").get(id ?? "") as any
+    if (!r) { console.log("unknown route", id); return }
+    const s = db.query("SELECT * FROM scores WHERE route_id = ? AND pool = 'auto'").get(r.route_id) as any
+    const h = db.query(`SELECT count(*) n, sum(outcome='ok') ok, sum(outcome='error') err, avg(e2e_ms) e2e, avg(tps) tps FROM request_metrics WHERE route_id = ?`).get(r.route_id) as any
+    console.log(JSON.stringify({ route: { ...r, meta_json: JSON.parse(r.meta_json) }, score: s ? { ...s, detail_json: JSON.parse(s.detail_json ?? "{}") } : null, history: h }, null, 2))
+    return
+  }
   if (cmd === "bootstrap") {
     const r = bootstrapFromOpencodeDb(db, opts.paths.opencodeDb)
     kvSet(db, "bootstrap:done", JSON.stringify({ at: Date.now(), ...r }))
@@ -97,6 +146,9 @@ async function main(argv: string[]) {
   for (const pid of Object.keys(opts.providerSync)) console.log(`  ${pad(pid, 12)} ${kvGet(db, `provider-sync:${pid}`) ?? "never"}`)
   console.log("\ncatalog last sync:", kvGet(db, "catalog:last-sync") ?? "never")
   console.log("history bootstrap:", kvGet(db, "bootstrap:done") ?? "not yet")
+  console.log("benchmarks openrouter:", kvGet(db, "bench-sync:openrouter") ?? "never")
+  console.log("benchmarks aa:", kvGet(db, "bench-sync:aa") ?? "never")
+  console.log("scores:", kvGet(db, "scores:last") ?? "never")
   const hist = db.query(`SELECT count(*) n, count(DISTINCT route_id) r FROM request_metrics WHERE kind='history'`).get() as any
   console.log(`request_metrics(history): ${hist.n} rows over ${hist.r} routes`)
 }

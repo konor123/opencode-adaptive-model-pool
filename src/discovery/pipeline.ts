@@ -1,6 +1,7 @@
 // Discovery pipeline: provider /v1/models refresh (leased) + effective catalog → routes.
 import { log } from "../log.ts"
 import type { OampOptions } from "../options.ts"
+import { applyAliases, buildAliasIndex } from "../identity/canonical.ts"
 import { buildRoute } from "../policy/eligibility.ts"
 import { acquireLease, type Db, kvSet, releaseLease } from "../storage/db.ts"
 import type { CatalogModel } from "../types.ts"
@@ -64,6 +65,7 @@ export function applyAndSync(db: Db, opts: OampOptions, cfg: any, modelsDev: Mod
   const caches = loadCaches(db, opts)
   const inject = injectProviderModels(cfg, caches)
   const { models, covered } = effectiveCatalog(cfg, modelsDev, opts.providers, cfg?.experimental?.enableExperimentalModels === true, caches)
+  applyAliases(models, buildAliasIndex(modelsDev))
   const routes = models.map((m) => buildRoute(m, opts))
   const sync = syncRoutes(db, routes, covered, now)
   kvSet(db, "catalog:last-sync", JSON.stringify({ at: now, routes: routes.length, ...sync }), now)

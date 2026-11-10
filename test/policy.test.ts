@@ -53,3 +53,18 @@ test("providerSync accepts new provider keys", () => {
   const o = resolveOptions({ providerSync: { newprov: { filter: "all" } } })
   expect(Object.keys(o.providerSync)).toEqual(["xkiro", "exaone", "newprov"])
 })
+
+test("alias index fills canonical ids across providers, skipping ambiguous ones", () => {
+  const { applyAliases, buildAliasIndex } = require("../src/identity/canonical.ts")
+  const idx = buildAliasIndex({
+    openrouter: { models: { "cohere/north-mini-code:free": { canonical_model_id: "cohere/north-mini-code-1-0" }, "x/amb": { canonical_model_id: "x/one" } } },
+    other: { models: { "x/amb": { canonical_model_id: "x/two" }, bare: { canonical_model_id: "y/bare" } } },
+  })
+  expect(idx.get("cohere/north-mini-code")).toBe("cohere/north-mini-code-1-0")
+  expect(idx.has("x/amb")).toBe(false)
+  expect(idx.has("bare")).toBe(false)
+  const ms: CatalogModel[] = [m({ providerID: "xkiro", modelID: "cohere/north-mini-code" }), m({ providerID: "xkiro", modelID: "z/unknown" })]
+  applyAliases(ms, idx)
+  expect(canonicalOf(ms[0]!)).toEqual({ canonicalID: "cohere/north-mini-code-1-0", matchConf: 0.9 })
+  expect(canonicalOf(ms[1]!)).toEqual({ canonicalID: "z/unknown", matchConf: 0.8 })
+})

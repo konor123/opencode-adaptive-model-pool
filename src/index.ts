@@ -5,6 +5,8 @@ import { loadModelsDev } from "./discovery/models-dev.ts"
 import { initLog, log } from "./log.ts"
 import { resolveOptions } from "./options.ts"
 import { type Db, kvGet, kvSet, openDb } from "./storage/db.ts"
+import { refreshBenchmarks } from "./benchmarks/refresh.ts"
+import { computePerformanceScores } from "./scoring/compute.ts"
 import { bootstrapFromOpencodeDb } from "./telemetry/bootstrap.ts"
 
 const FIRST_FETCH_TIMEOUT_MS = 5000
@@ -39,8 +41,18 @@ export const OampPlugin = async (_input: unknown, rawOptions?: unknown) => {
         } catch {
           cfgSnapshot = { provider: {} }
         }
-        setTimeout(() => {
-          refreshProviderModels(db, opts, cfgSnapshot).catch((e) => log("warn", "background refresh failed", { error: String(e) }))
+        setTimeout(async () => {
+          await refreshProviderModels(db, opts, cfgSnapshot).catch((e) => log("warn", "background refresh failed", { error: String(e) }))
+          try {
+            const b = await refreshBenchmarks(db, opts, cfgSnapshot)
+            const fetched = Object.values(b).some((x) => x.ok && x.count)
+            if (fetched || !kvGet(db, "scores:last")) {
+              const s = computePerformanceScores(db, opts, loadModelsDev(opts.paths.modelsDevCache)?.openrouter?.models)
+              log("info", "performance scores", { benchmarks: b, routes: s.length, withEvidence: s.filter((x) => x.result.used.length).length })
+            }
+          } catch (e: any) {
+            log("warn", "benchmark/scoring failed", { error: String(e?.message ?? e) })
+          }
           try {
             if (!kvGet(db, "bootstrap:done")) {
               const r = bootstrapFromOpencodeDb(db, opts.paths.opencodeDb)

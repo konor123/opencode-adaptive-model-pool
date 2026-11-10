@@ -75,6 +75,8 @@ const MIGRATIONS: string[] = [
   CREATE TABLE leases (job TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at INTEGER NOT NULL);
   CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
   `,
+  // v2: score explanation (indicators used, coverage, match, recency, independence)
+  `ALTER TABLE scores ADD COLUMN detail_json TEXT;`,
 ]
 
 export type Db = Database
